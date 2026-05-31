@@ -1,0 +1,32 @@
+# Static configuration for the trading agent. Risk/drawdown numbers mirror the spec
+# (00 - Trading Agent Spec.md). The spec wins on any conflict.
+
+capital:
+  starting_inr: 100000
+  leverage: 1.0            # cash only; gross exposure never exceeds available cash
+
+risk:
+  max_risk_per_trade_pct: 0.05   # R ceiling = 5% of equity (spec §4.1)
+  max_total_open_risk_pct: 0.15  # sum of open R ≤ 15% (spec §4.4)
+  max_per_name_notional_pct: 0.20 # per-name ≤ 20% notional (spec §4.4)
+  atr_len: 14
+  atr_k_default: 2.0             # stop = k×ATR; per-strategy override allowed (spec §4.1)
+
+drawdown:
+  daily_halt_pct: 0.05           # 5% daily → halt new entries (spec §5)
+  total_halt_pct: 0.15           # 15% from high-water → full stop (spec §5)
+
+universe:
+  size: 10
+  max_per_sector: 3
+  liquidity_lookback_days: 20
+
+market:
+  timezone: Asia/Kolkata
+  open: "09:15"
+  close: "15:30"
+  premarket_lead_min: 60
+
+paths:
+  # VAULT_PATH env overrides this. Mac dev default; set the real path on Windows.
+  vault: ./vault-dev

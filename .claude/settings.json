@@ -1,0 +1,33 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo Context was just compacted. Re-read CLAUDE.md and SESSION-HANDOFF.md in the project root before continuing the trading-agent build."
+          }
+        ]
+      },
+      {
+        "matcher": "resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo Resumed session. Read CLAUDE.md and SESSION-HANDOFF.md to restore build context before continuing."
+          }
+        ]
+      },
+      {
+        "matcher": "clear",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo Fresh session after clear. Read CLAUDE.md and SESSION-HANDOFF.md to resume the trading-agent build where it left off."
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,29 @@
+# Secrets & runtime state — NEVER commit
+.env
+*.token
+.kite_token.json
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+
+# OS
+.DS_Store
+
+# Local dev vault (the real vault lives on the Windows box via VAULT_PATH)
+vault-dev/
+
+# Cached instrument dumps
+data/cache/
+
+# Runtime loop state
+.loop_state.json
+
+# Local dashboard dev DB + Streamlit secrets
+dashboard_data.sqlite
+.streamlit/secrets.toml

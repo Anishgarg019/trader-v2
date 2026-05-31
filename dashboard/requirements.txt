@@ -1,0 +1,5 @@
+# Streamlit Community Cloud uses this file. Point the app's "Main file path" at
+# dashboard/app.py and (optionally) set this as the requirements path.
+streamlit>=1.32
+psycopg[binary]>=3.1
+pandas>=2.0

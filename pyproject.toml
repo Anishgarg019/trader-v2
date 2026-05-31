@@ -1,0 +1,22 @@
+[project]
+name = "trading-agent"
+version = "0.1.0"
+description = "Systematic paper-trading agent for NSE/BSE equities (read-only Kite data + local paper engine)"
+requires-python = ">=3.11"
+dependencies = [
+    "pandas>=2.0",
+    "numpy>=1.24",
+    "kiteconnect>=4.2",
+    "pyyaml>=6.0",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.setuptools.packages.find]
+include = ["agent*", "backtest*", "vault*", "data*"]
