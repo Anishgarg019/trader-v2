@@ -140,8 +140,13 @@ class VaultWriter:
                             backtest: dict | None = None, decay_check: str = "",
                             thesis: str = "", rules: str = "", conditions: str = "",
                             backtest_log: str = "", status_history: str = "",
-                            graveyard: bool = False) -> Path:
-        """Spec §7.3 strategy note."""
+                            graveyard: bool = False,
+                            frontmatter_extra: dict | None = None) -> Path:
+        """Spec §7.3 strategy note.
+
+        `frontmatter_extra` lets Phase 11 attach the `spec:` block and `deployed_symbols:`
+        list (the per-symbol allowlist) to the frontmatter (RESEARCHER-SPEC §6).
+        """
         fm: dict[str, Any] = {
             "type": "strategy", "id": strategy_id, "name": name, "status": status,
             "families": families or [], "timeframe": timeframe, "created": str(created),
@@ -153,6 +158,8 @@ class VaultWriter:
             },
             "decay_check": decay_check, "tags": ["strategy"],
         }
+        if frontmatter_extra:
+            fm.update(frontmatter_extra)
         default_rules = ("- Entry: <precise, parameterized>\n"
                          "- Exit: <precise>\n"
                          "- Sizing/stops: per spec §4 (atr_k above)")

@@ -236,6 +236,32 @@ class PaperBroker:
             order.status = STATUS_CANCELLED
         return order_id
 
+    # ---- persistence (Phase 11: multi-day continuity) ------------------------
+    def snapshot(self) -> dict[str, Any]:
+        """Serializable snapshot of the whole paper book (cash, positions, orders, GTTs,
+        trades, id sequences). Used to survive process restarts so each trading morning
+        resumes real multi-day state."""
+        return {
+            "starting_cash": self.starting_cash,
+            "cash": self.cash,
+            "orders": {oid: o.as_dict() for oid, o in self._orders.items()},
+            "gtts": {str(k): v for k, v in self._gtts.items()},
+            "trades": list(self._trades),
+            "positions": {k: p.as_dict() for k, p in self._positions.items()},
+            "order_seq": self._order_seq,
+            "gtt_seq": self._gtt_seq,
+        }
+
+    def restore(self, data: dict[str, Any]) -> None:
+        """Restore a snapshot() into THIS broker (price_fn/slippage_fn stay as wired)."""
+        self.cash = float(data.get("cash", self.cash))
+        self._orders = {oid: PaperOrder(**d) for oid, d in (data.get("orders") or {}).items()}
+        self._gtts = {int(k): v for k, v in (data.get("gtts") or {}).items()}
+        self._trades = list(data.get("trades") or [])
+        self._positions = {k: Position(**d) for k, d in (data.get("positions") or {}).items()}
+        self._order_seq = int(data.get("order_seq", self._order_seq))
+        self._gtt_seq = int(data.get("gtt_seq", self._gtt_seq))
+
     # ---- reads ---------------------------------------------------------------
     def get_orders(self) -> list[dict[str, Any]]:
         return [o.as_dict() for o in self._orders.values()]

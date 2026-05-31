@@ -23,7 +23,9 @@ data/cache/
 
 # Runtime loop state
 .loop_state.json
+.paper_book.json
 .s001_positions.json
+.s*_positions.json
 .backtest_run.log
 
 # Local dashboard dev DB + Streamlit secrets

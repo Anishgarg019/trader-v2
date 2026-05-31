@@ -34,6 +34,30 @@ STRATEGY_NOTE = "Strategies/s001 - RSI mean-reversion trend-filtered (long-only 
 PARAMS = dict(rsi_len=14, rsi_entry=30.0, rsi_exit=55.0,
               ma_len=200, atr_k=2.0, time_stop=10)
 
+# --- Phase 11 re-expression (RESEARCHER-SPEC §9) -----------------------------
+# s001 as a DSL spec. The compiled spec REPLACES build_s001_strategy_fn below (now retired;
+# kept only for the equivalence test in tests/test_s001_spec.py). The compiler reproduces the
+# RSI-entry / trend-filter / RSI-exit signal logic exactly; the time-stop is intentionally
+# dropped (not expressible in the DSL), and the ATR protective stop (atr_k×ATR) is handled
+# uniformly by the risk engine + the compiled factory — same as the hand-written version did.
+# n_params = rsi-entry threshold + rsi-exit threshold + atr_k = 3. Stays status: forward-test
+# (failed OOS 0/10 — pipeline proof, not edge). deployed_symbols = the live universe so it
+# keeps exercising the paper pipeline exactly as the hand-written version did.
+S001_SPEC = {
+    "id": "s001",
+    "name": "RSI mean-reversion trend-filtered (long-only daily)",
+    "families": ["mean-reversion", "trend-filter"],
+    "timeframe": "day",
+    "thesis": ("Oversold bounce (RSI(14)<30) gated by a long-term uptrend (close>SMA200) to "
+               "avoid catching falling knives. Long-only; exit when RSI recovers past 55."),
+    "entry": {"all": [
+        {"pred": "rsi_below", "length": 14, "threshold": 30},
+        {"pred": "price_above_ma", "length": 200, "kind": "sma"},
+    ]},
+    "exit": {"any": [{"pred": "rsi_above", "length": 14, "threshold": 55}]},
+    "atr_k": 2.0, "atr_len": 14, "size_fraction": 1.0,
+}
+
 _LOOKBACK_DAYS = 500  # calendar days → ~340 trading bars (comfortably > ma_len=200)
 
 

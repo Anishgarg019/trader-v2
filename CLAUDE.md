@@ -239,9 +239,10 @@ late-phase deliverable (venv, deps, `.env`, `kite_login.py`, `VAULT_PATH`, Task 
 - ✅ **BUILD COMPLETE (Phase 0 + phases 1–10).** Next: user pushes to git → pulls on
   Windows → Claude guides Windows setup (`SETUP-WINDOWS.md`), then `kite_login.py` +
   `verify_phase1.py` for the first live read-only checkpoint, then deploy first strategy.
-- Known limitation: paper-book (positions/cash) is in-memory in `run_loop.py`; `LoopState`
-  persists but multi-day continuity needs a long-lived process or paper-book persistence
-  (documented in SETUP-WINDOWS.md, honest follow-up).
+- ~~Known limitation: paper-book in-memory~~ **RESOLVED (Phase 11):** the paper book
+  (positions/cash/GTTs/orders/trades) now persists to `.paper_book.json` via
+  `agent/state.py` (`save_paper_book`/`load_paper_book`), reloaded at the start of every
+  `run_loop.py` pass — multi-day continuity holds across process restarts.
 - ✅ **DEPLOYED & LIVE (2026-05-31):** running on Windows (Task Scheduler 07:30 ntfy login +
   08:15 loop), Supabase + Streamlit dashboard live. **Dev moved to Windows — commit/push from
   there; Mac is secondary, don't push from Mac.**

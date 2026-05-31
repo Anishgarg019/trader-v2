@@ -10,11 +10,13 @@ dashboard. Persists LoopState across runs.
 
 SAFETY: orders only ever go to the local PaperBroker; the Kite client is read-only; the
 dashboard receives performance data only (no credentials, no order capability). Dashboard
-publishing is best-effort — a DB hiccup never affects trading. The deployed strategy
-(s001, forward-test) is wired via agent/strategy.py; see its note for the kill record.
+publishing is best-effort — a DB hiccup never affects trading. Deployed strategies are read
+from the vault REGISTRY (Phase 11): every forward-test strategy note with a `spec:` block is
+compiled and trades only its gate-proven `deployed_symbols`. The autonomous researcher
+(scripts/researcher.py) writes those notes; this loop just executes the compiled DSL.
 
-KNOWN LIMITATION: the PaperBroker is in-memory (LoopState persists, the paper book does not);
-for multi-day continuity use --watch (one long-lived process) or add paper-book persistence.
+The paper book (positions/cash/GTT) persists across runs via agent/state.py, so each morning
+resumes real multi-day state.
 """
 from __future__ import annotations
 
@@ -32,14 +34,16 @@ from agent.broker.kite_client import KiteDataClient
 from agent.broker.paper_broker import PaperBroker
 from agent.execution import ExecutionEngine
 from agent.loop import Orchestrator
-from agent.strategy import build_s001_strategy_fn
-from agent.state import load_state, save_state
+from agent.registry import StrategyRegistry
+from agent.live_strategies import build_history_fn, build_strategy_fn
+from agent.state import load_state, save_state, load_paper_book, save_paper_book
 from agent.retry import call_with_retries
 from agent.trading_day import IST, MARKET_OPEN, MARKET_CLOSE
 from vault.writer import VaultWriter
 
 log = get_logger()
 STATE_PATH = REPO_ROOT / ".loop_state.json"
+PAPER_BOOK_PATH = REPO_ROOT / ".paper_book.json"
 
 
 def _load_universe(vault: VaultWriter) -> list[str] | None:
@@ -82,6 +86,9 @@ def main(walk_day: bool = False, watch: bool = False, interval: int = 60) -> int
         return float(data[exch_symbol]["last_price"])
 
     broker = PaperBroker(starting_cash=starting, price_fn=price_fn)
+    if load_paper_book(PAPER_BOOK_PATH, broker):
+        log.info("paper book restored: cash=%.2f open_positions=%d",
+                 broker.cash, len(broker.get_positions()))
     vault = VaultWriter(s.vault_path)
     vault.ensure_structure()
     execu = ExecutionEngine(broker, vault, kite_client=kite, mode=s.mode)
@@ -89,10 +96,15 @@ def main(walk_day: bool = False, watch: bool = False, interval: int = 60) -> int
                         universe=_load_universe(vault), price_fn=price_fn, mode=s.mode)
     runner = orch.run_day if walk_day else orch.run_once
 
-    # Deployed strategy (forward-test): s001. See agent/strategy.py for the kill-record note —
-    # it is wired to exercise the live paper pipeline, not because the backtest passed.
-    strategy_fn = build_s001_strategy_fn(
-        kite=kite, broker=broker, vault=vault, state_path=REPO_ROOT / ".s001_positions.json")
+    # Deployed strategies come from the vault registry (Phase 11): every forward-test note
+    # with a compiled `spec:` block, trading only its gate-proven `deployed_symbols`.
+    registry = StrategyRegistry(vault)
+    active = registry.load_active_specs()
+    history_fn = build_history_fn(kite)
+    strategy_fn = build_strategy_fn(active, history_fn=history_fn, broker=broker,
+                                    vault=vault, state_dir=str(REPO_ROOT))
+    log.info("registry: %d active forward-test spec(s): %s", len(active),
+             [a.spec.get("id") for a in active])
 
     def fetch_quotes():
         if not orch.universe:
@@ -108,6 +120,7 @@ def main(walk_day: bool = False, watch: bool = False, interval: int = 60) -> int
         now = datetime.now(IST)
         result = runner(now, state=state, strategy_fn=strategy_fn, quotes=fetch_quotes())
         save_state(STATE_PATH, result.state)
+        save_paper_book(PAPER_BOOK_PATH, broker)  # persist positions/cash/GTTs across runs
         _maybe_publish(result, vault, broker, price_fn)
         log.info("date=%s phase=%s trading_day=%s research_only=%s equity=%.2f",
                  result.date, result.phase, result.trading_day, result.research_only,
@@ -141,4 +154,11 @@ if __name__ == "__main__":
         idx = args.index("--watch")
         if idx + 1 < len(args) and args[idx + 1].isdigit():
             iv = int(args[idx + 1])
-    raise SystemExit(main(walk_day="--day" in args, watch="--watch" in args, interval=iv))
+    try:
+        raise SystemExit(main(walk_day="--day" in args, watch="--watch" in args, interval=iv))
+    except SystemExit:
+        raise
+    except BaseException as e:  # noqa: BLE001 — alert on any unhandled failure, then re-raise
+        from agent.notify import notify_failure
+        notify_failure("run_loop", e)
+        raise

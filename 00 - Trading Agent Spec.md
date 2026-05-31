@@ -609,12 +609,26 @@ order_tag: SYS-s001
 ```
 
 ### 7.3 Strategy note template (one per idea; thesis → status)
+
+> **Phase 11 reconciliation (2026-05-31).** The autonomous researcher writes strategy notes
+> as the live **registry**. Two additions to the schema below:
+> - **`status` vocabulary adds `forward-test`:** `researching → forward-test → retired/rejected`.
+>   `forward-test` = passed the overfit gate and is trading **paper** (PaperBroker) to gather
+>   live evidence. **`live` is RESERVED but NOT wired** (user decision 2026-05-31) — nothing
+>   reads or writes `status: live`; the autonomous researcher's ceiling is `forward-test`.
+>   Revisit `live` only when a human explicitly asks to promote something.
+> - **`spec:` + `deployed_symbols:` frontmatter blocks** (below) hold the machine-readable DSL
+>   spec (RESEARCHER-SPEC §3) and the per-symbol allowlist the backtest gate proved profitable.
+>   The live loop compiles `spec:` and trades **only** `deployed_symbols` — never a symbol the
+>   strategy lost on (per-symbol deployment, RESEARCHER-SPEC §5).
+
 ```markdown
 ---
 type: strategy
 id: s001
 name: rsi-meanrev-trend-filter
-status: researching        # researching | live | retired | rejected
+status: forward-test       # researching | forward-test | retired | rejected
+                           #   (live = RESERVED, NOT wired — Phase 11, user decision 2026-05-31)
 families: [momentum, trend]
 timeframe: day
 created: 2026-05-30
@@ -633,6 +647,24 @@ backtest:
   trades:
   friction_modeled: true
 decay_check: "rolling 60-trade win rate; retire if < X"
+# --- Phase 11: machine-readable spec (the registry the live loop reads) ---
+spec:                      # the validated JSON DSL (RESEARCHER-SPEC §3); compiled, never eval'd
+  id: s001
+  name: rsi-meanrev-trend-filter
+  families: [mean-reversion, trend-filter]
+  timeframe: day
+  entry:
+    all:
+      - {pred: rsi_below, length: 14, threshold: 30}
+      - {pred: price_above_ma, length: 200, kind: sma}
+  exit:
+    any:
+      - {pred: rsi_above, length: 14, threshold: 55}
+  atr_k: 2.0
+  atr_len: 14
+  size_fraction: 1.0
+deployed_symbols:          # per-symbol allowlist — the ONLY names this strategy trades
+  - NSE:RELIANCE
 tags: [strategy]
 ---
 
@@ -640,18 +672,19 @@ tags: [strategy]
 <the economic/behavioral reason this should have edge>
 
 ## Exact rules
-- Entry: <precise, parameterized>
-- Exit: <precise>
+- Entry: <precise, parameterized — mirrors the compiled `spec.entry` tree>
+- Exit: <precise — mirrors `spec.exit`; the ATR stop (atr_k×ATR) is protective, not in the exit tree>
 - Sizing/stops: per spec §4 (atr_k above)
 
 ## Conditions where it works / decays
-<regimes, links to [[regime notes]]>
+<regimes, links to [[regime notes]]; per-symbol win/loss table from the gate verdict>
 
 ## Backtest log
-<in-sample vs out-of-sample results, overfitting checks, divergence caveats>
+<in-sample vs out-of-sample results per symbol, overfitting checks, divergence caveats>
 
 ## Status history
 - 2026-05-30 created (researching)
+- 2026-05-31 forward-test (passed gate on deployed_symbols; trading paper to gather evidence)
 ```
 
 ### 7.4 Daily note template

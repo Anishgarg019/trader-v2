@@ -66,21 +66,50 @@ python -m pytest                       # full test suite should be all green
 python scripts\run_loop.py             # runs the clock-appropriate block for now (IST)
 python scripts\run_loop.py --day       # walk every block (simulation/catch-up)
 ```
-It writes daily/trade/alert notes into your Obsidian vault and persists `.loop_state.json`.
-With no strategy deployed yet it runs the gate/governor/daily-note/research skeleton and
-places **no** trades (safe by design).
+It writes daily/trade/alert notes into your Obsidian vault and persists `.loop_state.json`
+**and `.paper_book.json`** (positions/cash/GTT stops — restored at the start of every pass,
+so multi-day paper state survives restarts). Deployed strategies are read from the vault
+**registry** (Phase 11): every `Strategies/*.md` note with `status: forward-test` and a
+`spec:` block is compiled and trades only its gate-proven `deployed_symbols`. The autonomous
+researcher (§8) writes those notes; the loop just executes the compiled DSL. s001 is the seed
+forward-test.
 
-## 8. Schedule it (Task Scheduler) — ~08:15 IST, T-60m before the 09:15 open
-1. Open **Task Scheduler → Create Task**.
-2. **Triggers → New → Daily**, set the time to your local equivalent of **08:15 IST**
-   (adjust for your timezone; the agent itself uses IST internally).
-3. **Actions → New → Start a program**:
-   - Program/script: `C:\path\to\Trader V2\.venv\Scripts\python.exe`
-   - Arguments: `scripts\run_loop.py`
-   - Start in: `C:\path\to\Trader V2`
-4. Because the Kite token expires daily, also schedule (or run manually each morning)
-   `scripts\kite_login.py` before the loop — the interactive login can't be fully automated
-   without storing credentials/TOTP.
+## 8. Schedule it (Task Scheduler) — all IST (this box's clock = IST)
+
+Four scheduled tasks make the service hands-off except the ~30-second daily Kite login:
+
+| Task | When (IST) | Command |
+|------|-----------|---------|
+| `Trader - login reminder` | 07:30 daily | `python scripts\notify_login.py` (ntfy push to your phone) |
+| `Trader - daily loop` | 08:15 daily | `python scripts\run_loop.py --watch 60` (T-60m; watches through the session) |
+| `Trader - researcher daily` | 16:15 Mon–Sat | `python scripts\researcher.py` (daily-light: decay/coverage + small top-up) |
+| `Trader - researcher weekly` | 16:15 Sun | `python scripts\researcher.py --weekly` (full proposals + improvement pass) |
+
+The two **researcher** tasks were created by this build:
+```powershell
+$py = "C:\Users\Anish\Documents\trader-v2\.venv\Scripts\python.exe"
+$rs = "C:\Users\Anish\Documents\trader-v2\scripts\researcher.py"
+schtasks /create /tn "Trader - researcher daily"  /tr "`"$py`" `"$rs`""          /sc WEEKLY /d MON,TUE,WED,THU,FRI,SAT /st 16:15 /f
+schtasks /create /tn "Trader - researcher weekly" /tr "`"$py`" `"$rs`" --weekly"  /sc WEEKLY /d SUN                  /st 16:15 /f
+```
+(Daily-light runs Mon–Sat and weekly-deep runs Sun, so they never double-fire on Sunday.)
+
+**Resilience built in:**
+- *Retry/backoff* — Kite quote/history calls go through `agent/retry.py` (exponential backoff).
+- *ntfy on failure* — `run_loop.py` and `researcher.py` push a high-priority ntfy alert on any
+  unhandled exception (set `NTFY_TOPIC` in `.env`). The researcher also pushes a run summary.
+
+**"Run whether user is logged on or not" (recommended, needs your password):** the tasks above
+run **only while you're logged on** (the default, matching the existing tasks). To make them run
+on the locked-screen/headless box, open each task in **Task Scheduler → Properties → General →
+"Run whether user is logged on or not"** and click OK (Windows prompts for your account
+password — which can't be supplied non-interactively, so this is a one-time manual step per
+task). Do this for all four if you want the box to trade without an interactive session.
+
+**Daily Kite login (the one unavoidable manual step):** the token expires ~6 AM IST and the
+interactive login (with TOTP) can't be fully automated without storing credentials. The 07:30
+reminder pings your phone; tap it and run `python scripts\kite_login.py`. Then the day's loop +
+researcher work.
 
 ## 9. Cloud dashboard (optional but you wanted it)
 A Streamlit app on Streamlit Community Cloud shows performance + the logic behind each trade,
@@ -99,9 +128,10 @@ Preview locally first: `python -m dashboard.seed_demo` then
 ability. Publishing is best-effort; a DB outage never affects trading.
 
 ## Notes & honest limitations
-- **Paper-book persistence**: `run_loop.py` persists `LoopState` (day-open equity, high-water
-  mark) but the in-memory paper book resets each process. For continuous multi-day paper
-  trading, keep one long-lived process or add paper-book persistence (future work).
+- **Paper-book persistence (resolved, Phase 11)**: `run_loop.py` persists both `LoopState`
+  (day-open equity, high-water mark) and the full paper book (`.paper_book.json`:
+  positions/cash/GTT stops/orders/trades), reloaded at the start of every pass — multi-day
+  paper state survives process restarts.
 - **Backtest ≠ paper ≠ live**: backtest models friction; paper fills are approximate; real
   fills would differ again (spec §1.4). Report edge with its caveats.
 - Token, `.env`, `.venv`, and `vault-dev/` are git-ignored — never commit secrets.
