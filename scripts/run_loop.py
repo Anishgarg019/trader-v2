@@ -10,8 +10,8 @@ dashboard. Persists LoopState across runs.
 
 SAFETY: orders only ever go to the local PaperBroker; the Kite client is read-only; the
 dashboard receives performance data only (no credentials, no order capability). Dashboard
-publishing is best-effort — a DB hiccup never affects trading. No strategy is auto-wired
-(strategy_fn=None) until one is deployed by the research process.
+publishing is best-effort — a DB hiccup never affects trading. The deployed strategy
+(s001, forward-test) is wired via agent/strategy.py; see its note for the kill record.
 
 KNOWN LIMITATION: the PaperBroker is in-memory (LoopState persists, the paper book does not);
 for multi-day continuity use --watch (one long-lived process) or add paper-book persistence.
@@ -32,6 +32,7 @@ from agent.broker.kite_client import KiteDataClient
 from agent.broker.paper_broker import PaperBroker
 from agent.execution import ExecutionEngine
 from agent.loop import Orchestrator
+from agent.strategy import build_s001_strategy_fn
 from agent.state import load_state, save_state
 from agent.retry import call_with_retries
 from agent.trading_day import IST, MARKET_OPEN, MARKET_CLOSE
@@ -88,6 +89,11 @@ def main(walk_day: bool = False, watch: bool = False, interval: int = 60) -> int
                         universe=_load_universe(vault), price_fn=price_fn, mode=s.mode)
     runner = orch.run_day if walk_day else orch.run_once
 
+    # Deployed strategy (forward-test): s001. See agent/strategy.py for the kill-record note —
+    # it is wired to exercise the live paper pipeline, not because the backtest passed.
+    strategy_fn = build_s001_strategy_fn(
+        kite=kite, broker=broker, vault=vault, state_path=REPO_ROOT / ".s001_positions.json")
+
     def fetch_quotes():
         if not orch.universe:
             return None
@@ -100,7 +106,7 @@ def main(walk_day: bool = False, watch: bool = False, interval: int = 60) -> int
     def one_pass() -> None:
         state = load_state(STATE_PATH)
         now = datetime.now(IST)
-        result = runner(now, state=state, strategy_fn=None, quotes=fetch_quotes())
+        result = runner(now, state=state, strategy_fn=strategy_fn, quotes=fetch_quotes())
         save_state(STATE_PATH, result.state)
         _maybe_publish(result, vault, broker, price_fn)
         log.info("date=%s phase=%s trading_day=%s research_only=%s equity=%.2f",
