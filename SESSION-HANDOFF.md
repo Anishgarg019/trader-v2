@@ -1,87 +1,93 @@
-# Session Handoff — 2026-05-31 (Mac dev → Windows)
+# Session Handoff — 2026-05-31 (Mac architect session, late)
 
 ## TL;DR
-The full agent is **built, tested (191 passing), deployed, and live** (Windows Task Scheduler
-+ Supabase + Streamlit dashboard). We are now **building & deploying the first trading
-strategy**. The universe is selected, RELIANCE has been studied, and a strategy is designed.
-**Next: write the backtest-research script, run it (IS/OOS + costs), decide deploy/graveyard,
-and if it survives, build `agent/strategy.py` + wire it into `run_loop`.** This session is
-moving development onto the Windows box (Claude Code on Windows) so research runs against
-live Kite data with no copy-paste.
+System is **built, deployed, and live** (Windows Task Scheduler + Supabase + Streamlit).
+This Mac session turned the Phase 11 design (previously trapped in chat) into **durable,
+build-ready files** and locked four user decisions about how the autonomous researcher
+deploys and improves strategies. **Nothing built in code this session** (Phase 11 is a
+Windows build); **nothing pushed from Mac.** The single most important next thing: **build
+Phase 11 on Windows from `RESEARCHER-SPEC.md`**, and **fix s001's status (`live` →
+`forward-test`)**.
 
-## Read first
-`CLAUDE.md` (durable decisions) and `00 - Trading Agent Spec.md` (the rulebook, law).
+## ⚠️ Where the durable artifacts now live (carry these to Windows)
+- **`RESEARCHER-SPEC.md`** (repo root) — the full, build-ready Phase 11 spec, grounded
+  against the real code (signal signatures, `run_backtest`, `overfit_report`,
+  `write_strategy_note`, the `strategy_fn(ctx)` loop contract).
+- **`prompts/research_desk_system.md`** — the headless-Claude "constitution" (system prompt).
+- Both are **untracked on Mac** (not committed, not pushed). `CLAUDE.md` §8 was also edited
+  (uncommitted). The s002 thesis and Phase 11 design are **no longer chat-only** — they're
+  in these files.
 
-## Where things run
-- Windows box `C:\Users\Anish\Documents\trader-v2`: live agent, real Kite (acct VVX933,
-  read-only), Obsidian vault at `C:\Users\Anish\Documents\TradingVault`, `.env` has real
-  creds + `DASHBOARD_DB_URL` (Supabase). Python 3.14, `.venv` present.
-- GitHub: `github.com/Anishgarg019/trader-v2` (**public**), branch `main`.
-- Dashboard: Streamlit Community Cloud, password-gated, reads Supabase.
+## Decisions locked this session (user, 2026-05-31)
+1. **No `live`, don't even wire it in.** Researcher deploys to `forward-test` only; nothing
+   reads/writes `live` until the user explicitly asks. No `promote.py`, no promotion path.
+2. **No s002.** The autonomous researcher invents its own strategies. **s001 is the only
+   hand-written seed**, kept purely to validate the DSL/compiler against a known result.
+3. **Per-symbol deployment.** Backtest each strategy on every universe stock independently;
+   deploy it **only on the stocks it's profitable on** (`deployed_symbols`), never the ones
+   it lost on. Empty set → reject to graveyard. **`MIN_SYMBOLS = 1`** (locked) — deploy on
+   even a single profitable stock; the paper forward-test + decay monitor catch flukes.
+4. **Cover the rest + keep improving.** Stocks with no profitable strategy ("uncovered")
+   are the priority target for new strategies. Profitable-but-mediocre strategies get an
+   **improvement loop** (`backtest/optimize.py`, §8.5) — variants accepted **only on
+   out-of-sample gain, with no added knobs** (guarded against curve-fitting; it's safety
+   invariant #7).
+5. **Param-count rule:** count only deliberately-tunable knobs (thresholds, `atr_k`);
+   conventional lengths (14/20/50/200) are fixed structure, excluded from `n_params`.
 
-## Universe (selected 2026-05-31, in vault `Universe/current-universe.md`)
-HDFCBANK, RELIANCE, ICICIBANK, BHARTIARTL, SBIN (3 banks cap-limited), INFY, TCS, M&M,
-TATASTEEL, HINDALCO. All liquid (₹6–30k cr/day), ATR% 2.0–2.9%.
+## Carried-over earlier decisions (still hold)
+- **Dev is on Windows; Mac is secondary.** Commit/push from Windows; **don't push from Mac.**
+- **Safety model for Phase 11:** Claude proposes strategies as a constrained JSON DSL over
+  the signal library; deterministic Python compiles + backtests + gates; **the execution
+  path only ever runs the compiled DSL, never LLM-written code; the overfit gate is code.**
+- **Auto-deploy ceiling is `forward-test`** (paper). Guardrails (ATR sizing, stops, drawdown
+  governor) stay ON; every order justified + journaled.
 
-## RELIANCE study (2021-05 → 2026-05, 1240 daily bars)
-- Ann return +5.2%, ann vol 22.5%, median ATR% 1.91%, buy&hold maxDD −27.4%
-- % days ADX>25: **46%** (fairly trendy); % time above SMA200: **51%** (balanced regime)
-- Return autocorr lag1: **+0.013** (~zero → no daily momentum/reversion)
-- **Avg 5d return after RSI<30 (oversold, n=36): +1.09%** ← real oversold bounce
-- Avg 5d return after RSI>70 (overbought, n=91): **+0.00%** ← no edge fading tops
-- Read: oversold dips bounce; tops don't fade; downtrends happen (−27% DD) → trend filter needed.
+## Current phase & status
+- **Phase 11 (autonomous researcher): DESIGNED + spec'd, NOT built.** Build it on Windows
+  per `RESEARCHER-SPEC.md` §11 checklist.
+- **s001: deployed on Windows, UNCOMMITTED/UNPUSHED, mislabeled `status: live`.** It FAILED
+  OOS (0/10) → must be **`forward-test`** (pipeline proof, not edge; rarely opens — by design).
+- Tests on Windows last seen: 191 passed / 2 skipped (pre-Phase-11).
 
-## Strategy designed (to backtest) — s001: RSI mean-reversion, trend-filtered (long-only, daily)
-**Rationale:** the only measured edge is the oversold bounce, and it must be gated by the
-broader trend (only buy dips when the stock is in an uptrend, else you catch falling knives).
-Long-only because overbought is not predictive. Few params; OOS is the judge.
-- **Entry (long):** `RSI(14) < 30` AND `close > SMA(200)`
-- **Exit:** `RSI(14) > 55` OR `close <= entry − 2×ATR(14)` (stop) OR `10 bars elapsed` (time stop)
-- **Sizing/stops:** per spec §4 (atr_k = 2.0)
-- **Params:** rsi_len=14, rsi_entry=30, rsi_exit=55, ma_len=200, atr_k=2.0, time_stop=10
+## Phase 11 build order (from RESEARCHER-SPEC.md §2/§11)
+`agent/strategy_spec.py` (DSL + validator + `count_params`) → `agent/strategy_compiler.py`
+(entries/exits + `strategy_fn_factory(deployed_symbols=…)`) → `backtest/research.py`
+(`evaluate_spec(spec, frames)` → per-symbol gate → `deployed_symbols`) → `agent/registry.py`
+(`spec:` + `deployed_symbols:` frontmatter, `load_active_specs` forward-test only,
+`coverage()`) → re-express s001 as a spec (then retire the hand-written version) → wire
+`scripts/run_loop.py` `strategy_fn` from the registry → `scripts/researcher.py`
+(coverage-targeted proposals + caps) → `backtest/optimize.py` (improvement loop §8.5) →
+drop `prompts/research_desk_system.md` in place → Task Scheduler (daily ~16:15 + weekly Sun,
+improvement pass weekly only) → tests (incl. `test_optimize.py` curve-fitting guard) → `/qa`.
 
-## Next steps (ordered)
-1. **Build `scripts/research_backtest.py`**: pull ~5y daily for RELIANCE (and the other 9
-   universe names for a robustness check), compute the s001 entry/exit boolean series from
-   `agent.signals`, run `backtest.engine.run_backtest` (CNC, slippage ~5bps), split IS/OOS
-   (~70/30 or by date), print metrics + `backtest.validation.overfit_report`.
-2. **Run it on Windows** (live data). Read: does it beat buy&hold risk-adjusted? Does the
-   edge survive OOS? Does it generalize across the other names, or only fit RELIANCE
-   (suspicious → likely overfit)?
-3. **Decide:** deploy or graveyard (write the strategy note `Strategies/s001 - ...md` either
-   way; graveyard if it fails — that's the process working).
-4. **If deploy:** build `agent/strategy.py` (a strategy registry: function(df)->entry/exit
-   intents implementing s001), wire `Orchestrator`/`run_loop` `strategy_fn` to evaluate it
-   over the universe (fetch recent daily candles per name, produce enter/exit intents), set
-   status `live`, and consider switching `run_loop` to `--watch` + a market-hours schedule.
+## Next steps (ordered, actionable)
+1. **On Windows:** set s001 `status: forward-test`, then **commit + push** the s001 work so
+   origin/Mac catch up (resolves the divergence below). Also pull in the Mac-authored
+   `RESEARCHER-SPEC.md`, `prompts/research_desk_system.md`, and the `CLAUDE.md` edit.
+2. **Build Phase 11** per the build order above / `RESEARCHER-SPEC.md` §11.
+3. **Re-express s001 as a DSL spec** (validate compiler reproduces known result).
+4. **Reconcile spec §7.3:** add `forward-test` status + the `spec:` + `deployed_symbols:`
+   frontmatter block (leave `live` reserved/unwired).
 
-## Operating mode — paper FORWARD-TESTING (learning by doing) [user decision 2026-05-31]
-It's paper money, so we deliberately LOWER the bar to *place* a trade and LEARN from real
-outcomes — the bot trades the theses it forms, observes results, and that feeds strategy
-development. Guardrails stay ON (disciplined exploration, not a free-for-all):
-- Every order: ATR-sized (R≤5%), broker-side stop, drawdown governor (5%/15%) — unchanged.
-- Every order: a written thesis/justification + journaled (no unjustified trades). The
-  journal IS the learning data.
-- **Status model:** researching → **forward-test** (paper-trading a thesis to gather live
-  data) → **live** (backtested + OOS-validated + paper-confirmed) → retired/rejected (graveyard).
-- Don't claim "edge" from a handful of paper trades; forward-testing COMPLEMENTS backtesting,
-  not replaces it. Outcomes → weekly/monthly reviews + decay tracking → promote or bury.
-- **s001:** deploy as **forward-test** now (start paper-trading it) AND run the backtest/OOS
-  in parallel; both inform whether it graduates to `live` or goes to the graveyard.
-- Impl note: `agent/strategy.py` needs a `status`; the loop trades strategies with status in
-  {forward-test, live}; run `run_loop.py --watch` through market hours so it can act + capture outcomes.
+## Open questions / waiting on user
+- *(None blocking.)* Univ-pass fraction is GONE — superseded by per-symbol deployment; don't
+  reintroduce it. Resolved this session: research-desk prompt DRAFTED; live-gating NOT BUILT;
+  **`MIN_SYMBOLS = 1`** (locked).
 
-## Path to autonomous (ordered — drive toward this)
-1. Deploy a strategy that actually trades — start **s001 as forward-test** (per the mode above).
-2. Run through market hours: `run_loop.py --watch` + schedule ~09:10 IST (not just one 08:15 pass).
-3. Persist the paper book across runs (or rely on one long-lived --watch process per day).
-4. Morning Kite login: manual via ntfy now (your choice); optionally automate TOTP for hands-off.
-5. (Optional) Schedule the Claude research agent for autonomous hypothesis/decay/promote.
-→ When 1–3 are done it's an autonomous *paper trader*, not just a monitor/journal.
-
-## Watch out
-- **Paper-only. Never place a live order.** Kite client is read-only; orders go to PaperBroker.
-- Scripts/app need `sys.path.insert(0, repo_root)` at top (entrypoint dir ≠ repo root).
-- **Overfitting discipline:** keep params few; if it only works on the tuned window or only on
-  RELIANCE, graveyard it. Most strategies should die.
-- Run `/qa` after each build (test + proofread). `git pull` first on Windows to get latest.
+## Watch out for
+- **GIT DIVERGENCE:** origin + Mac are behind; **Windows has uncommitted, unpushed s001 work.**
+  The Mac-authored Phase 11 files + CLAUDE.md edit are **untracked/uncommitted on Mac**. Do
+  NOT push from Mac (would risk conflicting with Windows's uncommitted work). Reconcile on
+  Windows: push s001 first, then bring the Mac files over.
+- **NEVER place a real order.** Paper guard holds. Phase 11 boundary: execution runs ONLY the
+  compiled DSL — never code the LLM writes. The overfit gate + the improvement-acceptance
+  rule are code, not LLM judgment.
+- **The improvement loop is a curve-fitting trap if done wrong** (safety invariant #7):
+  accept a variant ONLY on out-of-sample gain, no extra knobs, all hard gates pass.
+  IS-only improvement never deploys. `test_optimize.py` must enforce this.
+- **Per-symbol:** a strategy trades ONLY its `deployed_symbols`; never the names it lost on.
+- **s001 `live` is wrong** → `forward-test`.
+- `sys.path.insert(0, repo_root)` needed atop scripts/app (entrypoint dir ≠ repo root).
+- Paper book is in-memory; `run_loop --watch` must be launched each trading morning.
+- Run `/qa` after each build; honesty rule applies.
