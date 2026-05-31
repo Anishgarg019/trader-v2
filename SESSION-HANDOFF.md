@@ -55,6 +55,30 @@ Long-only because overbought is not predictive. Few params; OOS is the judge.
    over the universe (fetch recent daily candles per name, produce enter/exit intents), set
    status `live`, and consider switching `run_loop` to `--watch` + a market-hours schedule.
 
+## Operating mode — paper FORWARD-TESTING (learning by doing) [user decision 2026-05-31]
+It's paper money, so we deliberately LOWER the bar to *place* a trade and LEARN from real
+outcomes — the bot trades the theses it forms, observes results, and that feeds strategy
+development. Guardrails stay ON (disciplined exploration, not a free-for-all):
+- Every order: ATR-sized (R≤5%), broker-side stop, drawdown governor (5%/15%) — unchanged.
+- Every order: a written thesis/justification + journaled (no unjustified trades). The
+  journal IS the learning data.
+- **Status model:** researching → **forward-test** (paper-trading a thesis to gather live
+  data) → **live** (backtested + OOS-validated + paper-confirmed) → retired/rejected (graveyard).
+- Don't claim "edge" from a handful of paper trades; forward-testing COMPLEMENTS backtesting,
+  not replaces it. Outcomes → weekly/monthly reviews + decay tracking → promote or bury.
+- **s001:** deploy as **forward-test** now (start paper-trading it) AND run the backtest/OOS
+  in parallel; both inform whether it graduates to `live` or goes to the graveyard.
+- Impl note: `agent/strategy.py` needs a `status`; the loop trades strategies with status in
+  {forward-test, live}; run `run_loop.py --watch` through market hours so it can act + capture outcomes.
+
+## Path to autonomous (ordered — drive toward this)
+1. Deploy a strategy that actually trades — start **s001 as forward-test** (per the mode above).
+2. Run through market hours: `run_loop.py --watch` + schedule ~09:10 IST (not just one 08:15 pass).
+3. Persist the paper book across runs (or rely on one long-lived --watch process per day).
+4. Morning Kite login: manual via ntfy now (your choice); optionally automate TOTP for hands-off.
+5. (Optional) Schedule the Claude research agent for autonomous hypothesis/decay/promote.
+→ When 1–3 are done it's an autonomous *paper trader*, not just a monitor/journal.
+
 ## Watch out
 - **Paper-only. Never place a live order.** Kite client is read-only; orders go to PaperBroker.
 - Scripts/app need `sys.path.insert(0, repo_root)` at top (entrypoint dir ≠ repo root).

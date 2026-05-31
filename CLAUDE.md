@@ -144,6 +144,11 @@ when coding Phase 4.
 - Be honest about uncertainty: backtest, paper, and (hypothetical) live results diverge —
   report edge **and** caveats.
 - Pause at each phase checkpoint for review unless told to run straight through.
+- **Paper forward-testing mode (user decision 2026-05-31):** since it's paper money, the bot
+  MAY trade theses it forms (status `forward-test`) to learn from live outcomes — guardrails
+  stay ON (ATR sizing, stops, drawdown governor) and every order is justified + journaled.
+  Status model: researching → forward-test → live (backtested+OOS+paper-confirmed) →
+  retired/rejected. Forward-testing complements, never replaces, backtest+OOS validation.
 - **QA after every major change (standing user rule):** run the **`/qa`** skill — test
   what was built, proofread the *entire* codebase, and (if a web UI ever exists) open it,
   screenshot it, and drive it via Chrome DevTools. Report honestly; never claim green
