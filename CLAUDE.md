@@ -246,19 +246,30 @@ late-phase deliverable (venv, deps, `.env`, `kite_login.py`, `VAULT_PATH`, Task 
 - ✅ **DEPLOYED & LIVE (2026-05-31):** running on Windows (Task Scheduler 07:30 ntfy login +
   08:15 loop), Supabase + Streamlit dashboard live. **Dev moved to Windows — commit/push from
   there; Mac is secondary, don't push from Mac.**
-- ⏳ **Strategy work in progress:** s001 (RSI mean-reversion) deployed on Windows as a
-  forward-test (failed OOS 0/10 — pipeline proof, not edge; **its note must be status
-  `forward-test`, not `live`**). **s002 dropped** (2026-05-31) — the autonomous researcher
-  invents its own strategies; s001 is the only hand-written seed (used to validate the DSL).
-- ⏳ **Phase 11 — Autonomous Researcher (decided, designed, NOT built):** a scheduled headless
-  Claude that invents strategies as a **constrained JSON DSL** over the signal library;
-  deterministic Python compiles + backtests + overfit-gates them; **execution runs only the
-  compiled DSL, never LLM code**; cadence **daily-light + weekly-deep**; vault notes (with
-  `spec:` + `deployed_symbols:` frontmatter) are the registry. **Per-symbol deployment**
-  (user 2026-05-31): a strategy is backtested on every stock and deployed **only on the ones
-  it's profitable on**; uncovered stocks get new strategies; profitable-but-mediocre ones get
-  an **improvement loop** (variants accepted ONLY on out-of-sample gain, no extra knobs — not
-  curve-fitting). **`live` is NOT built/wired** — forward-test is the ceiling. **Build-ready
-  spec: `RESEARCHER-SPEC.md`; research-desk prompt: `prompts/research_desk_system.md`** (both
-  authored on Mac 2026-05-31, untracked — carry to Windows). Build it on Windows.
-- ⏳ Reconcile spec **§7.3**: add `forward-test` status + the `spec:` frontmatter block.
+- ✅ s001 (RSI mean-reversion) re-expressed as a DSL spec (`agent/strategy.S001_SPEC`;
+  compiler reproduces the hand-written RSI/SMA200 signal logic) and migrated in the vault to
+  `status: forward-test` with `spec:` + `deployed_symbols:` (all 10 universe names) via
+  `scripts/deploy_s001.py`. The hand-written `build_s001_strategy_fn` is retired (kept only for
+  the equivalence test). Failed OOS 0/10 — pipeline proof, not edge.
+- ✅ **Phase 11 — Autonomous Researcher: BUILT, TESTED, DEPLOYED (2026-05-31, on Windows).**
+  - `agent/strategy_spec.py` (DSL validator + `count_params`, tuned-knobs-only, 5-knob ceiling),
+    `agent/strategy_compiler.py` (compile→entries/exits + `strategy_fn_factory`; divergence
+    predicates made causal — fixed a real look-ahead), `backtest/research.py`
+    (`evaluate_spec` per-symbol gate → `deployed_symbols`), `agent/registry.py`
+    (`spec:`+`deployed_symbols:` frontmatter; `load_active_specs` forward-test-only + re-validate;
+    `coverage`; refuses `live`), `agent/live_strategies.py` + `run_loop.py` wiring (registry-backed
+    `strategy_fn`), `backtest/optimize.py` (improvement loop — OOS-margin + no-added-knobs accept,
+    the curve-fitting guard), `scripts/researcher.py` (propose via headless `claude -p` → validate →
+    gate → deploy forward-test; caps in Python; ntfy).
+  - **`live` is NOT built/wired** — forward-test is the ceiling (registry refuses `live`).
+  - Paper-book persistence added (`.paper_book.json`); `agent/notify.py` failure alerts.
+  - **284 tests pass (2 skipped); /qa green (both blocks).** Verified live: loop runs
+    registry-backed (research-only on weekends, PaperBroker-only); researcher run end-to-end
+    proposed 2 → both graveyarded (honest zero); dashboard data path current in Supabase.
+  - Task Scheduler: `Trader - researcher daily` (Mon–Sat 16:15 IST) + `Trader - researcher
+    weekly` (Sun 16:15, `--weekly`), created. To run when logged-off, flip each task to
+    "Run whether user is logged on or not" in the GUI (needs the account password — manual).
+- ✅ Spec **§7.3 reconciled** (repo + vault copies): added `forward-test` status +
+  `spec:`/`deployed_symbols:` frontmatter block; `live` left reserved/unwired.
+- **Only recurring manual step:** the ~30s daily Kite login (`kite_login.py`) — token expires
+  ~6 AM IST; the 07:30 ntfy reminder pings the phone.
