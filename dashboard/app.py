@@ -13,6 +13,12 @@ Run locally:  DASHBOARD_DB_URL=dashboard_data.sqlite streamlit run dashboard/app
 from __future__ import annotations
 
 import os
+import sys
+from pathlib import Path
+
+# Make the repo root importable so `import dashboard.store` works when Streamlit Cloud
+# runs this file (it puts dashboard/ on the path, not the repo root).
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pandas as pd
 
