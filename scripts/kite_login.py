@@ -13,9 +13,23 @@ from __future__ import annotations
 
 import json
 import sys
+import urllib.parse
 from pathlib import Path
 
 from dotenv import load_dotenv, set_key
+
+
+def extract_request_token(raw: str) -> str:
+    """Accept the bare request_token OR the full redirect URL / query string and return
+    just the token. Kite redirects to e.g.
+    https://127.0.0.1/?action=login&status=success&request_token=ABC123 — pasting that
+    whole thing should work."""
+    raw = raw.strip()
+    if "request_token=" not in raw:
+        return raw
+    parsed = urllib.parse.urlparse(raw)
+    query = parsed.query or raw  # bare "request_token=..." has no scheme → query is empty
+    return urllib.parse.parse_qs(query).get("request_token", [raw])[0]
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ENV_PATH = REPO_ROOT / ".env"
@@ -37,7 +51,8 @@ def main() -> int:
     print("\n1) Open this URL, log in, and authorize:\n")
     print("   " + kite.login_url() + "\n")
     print("2) After redirect, copy the `request_token` value from the URL.\n")
-    request_token = input("Paste request_token here: ").strip()
+    pasted = input("Paste the request_token (or the full redirect URL) here: ").strip()
+    request_token = extract_request_token(pasted)
     if not request_token:
         print("ERROR: no request_token provided.", file=sys.stderr)
         return 1
