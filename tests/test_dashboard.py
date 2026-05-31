@@ -133,6 +133,42 @@ def test_empty_helpers_dont_crash():
     assert app.kpi_summary([], [])["open_positions"] == 0
 
 
+def _eqrow(eq, daily=0.0, total=0.0, ts="2026-05-29T09:15:00"):
+    return {"ts": ts, "equity": eq, "cash": 0, "daily_dd_pct": daily, "total_dd_pct": total}
+
+
+def test_band_metrics_status_levels():
+    ok = app.band_metrics([_eqrow(106000, 0.01, -0.02)], [])
+    assert ok["status"] == "Within limits" and ok["status_cls"] == "ok"
+    halted = app.band_metrics([_eqrow(94000, -0.06, -0.06)], [])
+    assert halted["status"] == "Halted today" and halted["status_cls"] == "warn"
+    stop = app.band_metrics([_eqrow(84000, -0.02, -0.16)], [])
+    assert stop["status"] == "Full stop" and stop["status_cls"] == "stop"
+
+
+def test_band_metrics_empty_is_awaiting():
+    m = app.band_metrics([], [])
+    assert m["status"] == "Awaiting first run" and m["equity"] is None
+
+
+def test_band_metrics_total_return_and_today_inr():
+    rows = [_eqrow(100000, 0.0, 0.0, "2026-05-29T09:15:00"),
+            _eqrow(110000, 0.10, 0.0, "2026-05-29T15:30:00")]
+    daily = [{"day_open_equity": 100000.0, "day_close_equity": 110000.0}]
+    m = app.band_metrics(rows, daily)
+    assert m["total_return"] == pytest.approx(0.10)
+    assert m["today_inr"] == pytest.approx(10000.0)
+
+
+def test_open_risk_sums_open_long_trades():
+    trades = [
+        {"status": "open", "entry_price": 100.0, "stop_price": 96.0, "qty": 10},   # 40
+        {"status": "open", "entry_price": 50.0, "stop_price": 47.0, "qty": 20},     # 60
+        {"status": "closed", "entry_price": 100.0, "stop_price": 90.0, "qty": 5},   # ignored
+    ]
+    assert app.open_risk(trades) == pytest.approx(100.0)
+
+
 # ---- full app render (catches runtime bugs the data helpers miss) ----
 import os
 from pathlib import Path
