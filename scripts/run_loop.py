@@ -22,6 +22,9 @@ import os
 import sys
 import time
 from datetime import datetime
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # make repo root importable
 
 from agent.config import load_settings, REPO_ROOT
 from agent.logging_setup import get_logger

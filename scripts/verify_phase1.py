@@ -10,6 +10,9 @@ from __future__ import annotations
 
 import sys
 from datetime import date, timedelta
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # make repo root importable
 
 from agent.config import load_settings
 from agent.broker.kite_client import KiteDataClient
