@@ -193,6 +193,54 @@ def count_params(spec: dict) -> int:
     return total
 
 
+def _collect_preds(node: Any, out: list[str]) -> None:
+    """Collect every leaf predicate name in a tree (combinators ignored — STRUCTURE only)."""
+    if not isinstance(node, dict):
+        return
+    if "pred" in node:
+        out.append(node["pred"])
+        return
+    for comb in COMBINATORS:
+        if comb in node:
+            children = node[comb]
+            children = children if isinstance(children, list) else [children]
+            for c in children:
+                _collect_preds(c, out)
+
+
+def _bare(symbol: str) -> str:
+    return symbol.split(":", 1)[1] if ":" in symbol else symbol
+
+
+def novelty_key(spec: dict, symbols: Any = None) -> str:
+    """The shared dedup/novelty key (CONTEXT-DIGEST-SPEC §3.1).
+
+    `family | sorted-predicate-structure | symbol-target`, e.g.
+    `"mean-reversion|rsi_above+rsi_below|HDFCBANK+SBIN"`. The SAME definition the researcher
+    uses to judge "is this idea new?" and the graveyard uses to bucket rejects, so the two
+    can never disagree.
+
+    Granularity (the fidelity crux): keyed on the **set of predicate names** (structure),
+    NOT their params — so two specs that differ only in thresholds collide (a param tweak is
+    the improvement loop's job, not a "new idea"), while a genuinely new variant that changes
+    the predicate structure gets its own bucket (never silently suppressed). `symbols` is the
+    set the spec was tried on / deployed on; None/empty → `*` (any).
+    """
+    families = spec.get("families") or []
+    fam = "+".join(sorted(str(f) for f in families)) or "none"
+
+    preds: list[str] = []
+    for key in ("entry", "exit"):
+        _collect_preds(spec.get(key, {}), preds)
+    structure = "+".join(sorted(set(preds))) or "empty"
+
+    if symbols:
+        syms = "+".join(sorted({_bare(str(s)) for s in symbols}))
+    else:
+        syms = "*"
+    return f"{fam}|{structure}|{syms}"
+
+
 def validate_spec(spec: dict) -> dict:
     """Validate a strategy spec against the DSL whitelist + structural caps.
 

@@ -145,7 +145,10 @@ class StrategyRegistry:
             thesis=thesis or spec.get("thesis", ""), rules=rules, conditions=conditions,
             backtest_log=verdict.notes, graveyard=graveyard,
             frontmatter_extra={"spec": spec_with_loc,
-                               "deployed_symbols": list(verdict.deployed_symbols)},
+                               "deployed_symbols": list(verdict.deployed_symbols),
+                               # the full set the spec was gate-tested on — lets the digest
+                               # bucket rejects by their true symbol-target (novelty key §3.1)
+                               "tested_symbols": sorted(verdict.per_symbol.keys())},
         )
         return note_rel
 

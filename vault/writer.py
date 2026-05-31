@@ -33,7 +33,10 @@ SUBDIRS = [
     "Reviews/Weekly", "Reviews/Monthly",
     "Research",
     "System/alerts",
+    "_context",          # maintained research digest (CONTEXT-DIGEST-SPEC)
 ]
+
+UNIVERSE_NOTE = "Universe/current-universe.md"
 
 
 def _dump_frontmatter(fm: dict[str, Any]) -> str:
@@ -44,6 +47,21 @@ def _dump_frontmatter(fm: dict[str, Any]) -> str:
 class VaultWriter:
     def __init__(self, vault_path: str | Path):
         self.root = Path(vault_path).expanduser()
+        # Maintained research digest (CONTEXT-DIGEST-SPEC). Lazily constructed; updated as a
+        # best-effort materialized VIEW on every relevant write — a digest error never breaks
+        # the note write (the note is truth and is already on disk by then).
+        from vault.digest import ResearchDigest
+        self.digest = ResearchDigest(self.root)
+
+    def _digest_safe(self, fn, *args, **kwargs) -> None:
+        """Run a digest mutation fail-safe: log and swallow any error (the digest is an
+        efficiency view; its failures must never break truth-writing or trading)."""
+        try:
+            fn(*args, **kwargs)
+        except Exception as e:  # noqa: BLE001 — digest is a view; never fatal
+            import logging
+            logging.getLogger("trading-agent").warning(
+                "digest update failed (non-fatal; rebuild will heal): %s", e)
 
     # ---- structure -----------------------------------------------------------
     def ensure_structure(self) -> None:
@@ -58,6 +76,9 @@ class VaultWriter:
         path.parent.mkdir(parents=True, exist_ok=True)
         content = f"---\n{_dump_frontmatter(frontmatter)}---\n\n{body.rstrip()}\n"
         path.write_text(content, encoding="utf-8")
+        # universe refresh → digest universe + coverage recompute (§2)
+        if str(relative_path).replace("\\", "/") == UNIVERSE_NOTE and frontmatter.get("names"):
+            self._digest_safe(self.digest.set_universe, list(frontmatter["names"]))
         return path
 
     def read_note(self, relative_path: str | Path) -> tuple[dict[str, Any], str]:
@@ -171,7 +192,28 @@ class VaultWriter:
             f"## Backtest log\n{backtest_log}\n\n"
             f"## Status history\n{status_history or default_history}\n"
         )
-        return self.write_note(self.strategy_rel(strategy_id, name, graveyard), fm, body)
+        rel = str(self.strategy_rel(strategy_id, name, graveyard)).replace("\\", "/")
+        path = self.write_note(rel, fm, body)
+        # --- digest maintenance (§2): only Phase-11 spec notes; fail-safe ---
+        spec = (frontmatter_extra or {}).get("spec")
+        if spec:
+            deployed = (frontmatter_extra or {}).get("deployed_symbols") or []
+            tested = (frontmatter_extra or {}).get("tested_symbols") or []
+            if graveyard:
+                self._digest_safe(self.digest.merge_rejected, spec=spec,
+                                  symbols=tested or deployed, note_rel=rel,
+                                  lesson=(backtest_log or "").strip().split("\n")[0],
+                                  when=str(created) or None)
+            elif status == "forward-test":
+                bt = fm.get("backtest") or {}
+                recent = {"trades_30d": None, "win_rate_30d": None,
+                          "oos_sharpe": bt.get("sharpe_like")}
+                self._digest_safe(self.digest.update_active, spec=spec,
+                                  deployed_symbols=deployed, note_rel=rel, recent=recent)
+            elif status in ("retired", "rejected"):
+                # retired/rejected-but-not-graveyard → drop from active (informational only)
+                self._digest_safe(self.digest.remove_active, strategy_id)
+        return path
 
     def write_daily_note(self, *, d: date | str, trading_day: bool = True,
                         holiday: str | None = None, day_open_equity: float = 100000,
@@ -195,7 +237,14 @@ class VaultWriter:
             "## Research today\n- Hypothesis / backtest / OOS result:\n"
             "- Decay check on live strategies:\n"
         )
-        return self.write_note(self.daily_rel(d), fm, body or default_body)
+        path = self.write_note(self.daily_rel(d), fm, body or default_body)
+        # digest perf refresh + coverage recompute (§2); fail-safe, day-change as the proxy
+        open_eq, close_eq = fm.get("day_open_equity"), fm.get("day_close_equity")
+        change = ((close_eq - open_eq) / open_eq
+                  if open_eq and close_eq not in (None, 0) else None)
+        self._digest_safe(self.digest.refresh_perf, equity_change_pct=change)
+        self._digest_safe(self.digest.refresh_coverage)
+        return path
 
     def write_system_alert(self, *, d: date | str, slug: str, kind: str,
                            detail: str = "") -> Path:

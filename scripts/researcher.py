@@ -37,12 +37,13 @@ from agent.config import load_settings, REPO_ROOT
 from agent.logging_setup import get_logger
 from agent.notify import send_ntfy, notify_failure
 from agent.registry import StrategyRegistry
-from agent.strategy_spec import validate_spec, SpecError, MAX_PARAMS
+from agent.strategy_spec import validate_spec, SpecError, novelty_key
 from backtest.research import evaluate_spec
 from backtest.optimize import (
     optimize_strategy, is_mediocre, MAX_VARIANTS_PER_STRATEGY,
 )
 from vault.writer import VaultWriter
+from vault.digest import ResearchDigest, digest_diff
 
 log = get_logger()
 
@@ -66,12 +67,19 @@ class ResearcherSummary:
     coverage_after: int = 0
     uncovered_before: list[str] = field(default_factory=list)
     note_rel: str | None = None
+    # fidelity telemetry (CONTEXT-DIGEST-SPEC §6.3): the digest under-informing shows up here
+    re_proposed_rejected: int = 0     # proposed an idea already in the graveyard rollup
+    near_dup_active: int = 0          # proposed a near-duplicate of an active strategy
+    digest_drift: int = 0             # incremental-vs-rebuild divergences (weekly)
+    digest_tokens: int = 0            # measured digest size (must stay ≤ cap)
     messages: list[str] = field(default_factory=list)
 
     def line(self) -> str:
         return (f"researcher[{self.cadence}]: proposed={self.proposed} valid={self.valid} "
                 f"deployed={self.deployed} improved={self.improved} rejected={self.rejected} "
-                f"coverage {self.coverage_before}->{self.coverage_after}")
+                f"coverage {self.coverage_before}->{self.coverage_after} "
+                f"digest={self.digest_tokens}tok re-proposed={self.re_proposed_rejected} "
+                f"near-dup={self.near_dup_active} drift={self.digest_drift}")
 
 
 # ---- data -------------------------------------------------------------------
@@ -147,23 +155,45 @@ def run_researcher(*, registry: StrategyRegistry, universe: list[str],
                    proposer: Callable[[dict, int], list[dict]],
                    cadence: str = "daily",
                    eval_kwargs: dict | None = None,
-                   regime: str = "n/a") -> ResearcherSummary:
-    """One researcher run. `proposer(ctx, max_proposals) -> list[spec]` is injected so the
-    orchestration is testable without shelling out to claude."""
+                   regime: str = "n/a",
+                   critic: Callable[[str, str], str] | None = None) -> ResearcherSummary:
+    """One researcher run. Proposal CONTEXT is read ONLY from the maintained digest
+    (`_context/RESEARCH-DIGEST.md`) — so the prompt size is decoupled from vault size and no
+    full-vault scan happens in the proposal path. LOAD-BEARING reads (the specs to compile/
+    improve, id-uniqueness, the per-symbol gate, deployment) still hit the REAL notes via the
+    registry — so a stale/lossy digest can only waste a cycle, never cause a bad deploy.
+
+    `proposer(ctx, max_proposals) -> list[spec]` and `critic(digest_text, sample) -> findings`
+    are injected so the orchestration is testable without shelling out to claude.
+    """
     eval_kwargs = eval_kwargs or {}
     weekly = cadence == "weekly"
     s = ResearcherSummary(cadence=cadence)
+    digest = ResearchDigest(registry.vault.root)
 
-    active = registry.load_active_specs()
-    cov = registry.coverage(active, universe)
-    s.coverage_before = len(cov.covered)
-    s.uncovered_before = list(cov.uncovered)
-    s.messages.append(f"{len(active)} active forward-test(s); "
-                      f"{len(cov.uncovered)} uncovered: {cov.uncovered}")
-
-    # 1) improve mediocre incumbents — WEEKLY only (improvement is expensive + noisy) ------
+    # --- heal/bootstrap the digest (notes stay truth; §5) --------------------------------
     if weekly:
-        for a in active:
+        incremental = digest.load()
+        rebuilt = digest.rebuild_from_vault()       # authoritative regeneration
+        drift = digest_diff(incremental, rebuilt) if incremental.get("generated") else []
+        s.digest_drift = len(drift)
+        if drift:
+            registry.vault.write_system_alert(
+                d=str(date.today()), slug="digest-drift", kind="digest-drift",
+                detail="Incremental digest diverged from rebuild:\n- " + "\n- ".join(drift))
+            s.messages.append(f"digest DRIFT detected ({len(drift)}) — rebuilt + alerted")
+    elif (not digest.exists()) or (not digest.load().get("universe")):
+        digest.rebuild_from_vault()                  # one-time bootstrap on a fresh digest
+        s.messages.append("digest bootstrapped via rebuild_from_vault")
+
+    # the run's `universe` is the authoritative current universe — keep the digest in sync so
+    # coverage is computed against it (idempotent; a no-op when already matching)
+    if universe and digest.load().get("universe") != list(universe):
+        digest.set_universe(list(universe))
+
+    # 1) improve mediocre incumbents — WEEKLY only (LOAD-BEARING: real specs from notes) ---
+    if weekly:
+        for a in registry.load_active_specs():
             try:
                 verdict = evaluate_spec(a.spec, frames, **eval_kwargs)
             except Exception as e:  # noqa: BLE001
@@ -182,26 +212,41 @@ def run_researcher(*, registry: StrategyRegistry, universe: list[str],
     else:
         s.messages.append("daily-light: skipping improvement pass (weekly-deep only)")
 
-    # 2) propose for UNCOVERED symbols (priority target) ----------------------------------
-    active = registry.load_active_specs()   # re-load (improvements may have changed things)
+    # --- proposal CONTEXT comes from the DIGEST ONLY (no full-vault scan) -----------------
+    dd = digest.load()
+    uncovered = dd["coverage"]["uncovered"]
+    s.coverage_before = len(dd["coverage"]["covered"])
+    s.uncovered_before = list(uncovered)
+    s.digest_tokens = dd.get("budget_tokens") or digest.measure(dd)
+    # novelty keys already in play, to detect re-proposals / near-dups (telemetry §6.3)
+    rejected_keys = {b.get("key") for b in dd.get("rejected", []) if b.get("key")}
+    active_keys = {a.get("key") for a in dd.get("active", []) if a.get("key")}
+    s.messages.append(f"{len(dd.get('active', []))} active; {len(uncovered)} uncovered: "
+                      f"{uncovered}; {len(dd.get('rejected', []))} rejected buckets "
+                      f"(digest {s.digest_tokens} tok)")
+
+    # 2) propose — cap is LOAD-BEARING (real active count) --------------------------------
+    active = registry.load_active_specs()
     if len(active) >= MAX_ACTIVE_FORWARD_TESTS:
         s.messages.append(f"at active cap ({MAX_ACTIVE_FORWARD_TESTS}) — no new proposals this run")
-        cov_after = registry.coverage(active, universe)
-        s.coverage_after = len(cov_after.covered)
+        s.coverage_after = len(digest.load()["coverage"]["covered"])
+        if weekly and critic is not None:
+            _run_critic(registry, digest, critic, s)
         s.note_rel = _write_research_note(registry.vault, s, regime)
         return s
 
     budget = DAILY_LIGHT_PROPOSALS if not weekly else MAX_PROPOSALS_PER_RUN
-    remaining_slots = MAX_ACTIVE_FORWARD_TESTS - len(active)
-    max_props = min(budget, remaining_slots)
+    max_props = min(budget, MAX_ACTIVE_FORWARD_TESTS - len(active))
 
     ctx = {
-        "MODE": "propose", "UNIVERSE": universe,
-        "UNCOVERED_SYMBOLS": cov.uncovered or "(none — all covered; diversify instead)",
-        "ACTIVE_STRATEGIES": [{"id": a.spec.get("id"), "deployed": a.deployed_symbols,
-                               "families": a.spec.get("families")} for a in active],
-        "GRAVEYARD": sorted(registry.graveyard_ids()),
-        "PARENT_SPEC": "", "REGIME": regime, "CADENCE": cadence,
+        "MODE": "propose", "UNIVERSE": dd.get("universe") or universe,
+        "UNCOVERED_SYMBOLS": uncovered or "(none — all covered; diversify instead)",
+        "ACTIVE_STRATEGIES": [{"id": a.get("id"), "deployed": a.get("deployed_symbols"),
+                               "families": a.get("family"), "recent": a.get("recent")}
+                              for a in dd.get("active", [])],
+        "GRAVEYARD": [{"key": b.get("key"), "tried": b.get("tried"), "lesson": b.get("lesson")}
+                      for b in dd.get("rejected", [])],
+        "PARENT_SPEC": "", "REGIME": dd.get("regime") or regime, "CADENCE": cadence,
     }
     proposals = proposer(ctx, max_props) or []
     if len(proposals) > max_props:
@@ -210,16 +255,14 @@ def run_researcher(*, registry: StrategyRegistry, universe: list[str],
         proposals = proposals[:max_props]
     s.proposed = len(proposals)
 
-    used_ids = registry.existing_ids()
+    used_ids = registry.existing_ids()   # LOAD-BEARING: real id-uniqueness (never collide)
     for spec in proposals:
-        # assign/repair id (never collide with an existing one)
         sid = spec.get("id")
         if not sid or sid in used_ids:
             sid = registry.next_strategy_id()
         spec["id"] = sid
         used_ids.add(sid)
 
-        # validate (param ceiling MAX_PARAMS enforced inside validate_spec)
         try:
             validate_spec(spec)
         except SpecError as e:
@@ -228,7 +271,18 @@ def run_researcher(*, registry: StrategyRegistry, universe: list[str],
             continue
         s.valid += 1
 
-        # per-symbol gate (deterministic, the ONLY path to deployment)
+        # telemetry: is the digest under-informing? (re-proposed dead / near-dup of active)
+        nk = novelty_key(spec, None)
+        if any(k and k.startswith(nk.rsplit("|", 1)[0]) for k in rejected_keys):
+            s.re_proposed_rejected += 1
+            s.messages.append(f"telemetry: {sid} re-proposes a graveyard family ({nk}) "
+                              "— rejected: under-informing")
+        if any(k and k.rsplit("|", 1)[0] == nk.rsplit("|", 1)[0] for k in active_keys):
+            s.near_dup_active += 1
+            s.messages.append(f"telemetry: {sid} near-duplicates an active family ({nk}) "
+                              "— active: under-informing")
+
+        # per-symbol gate (deterministic, the ONLY path to deployment — real frames/notes)
         verdict = evaluate_spec(spec, frames, **eval_kwargs)
         if verdict.passed and len(active) + len(s.deployed) < MAX_ACTIVE_FORWARD_TESTS:
             registry.write_spec_note(verdict, spec, status="forward-test",
@@ -236,7 +290,6 @@ def run_researcher(*, registry: StrategyRegistry, universe: list[str],
             s.deployed.append(sid)
             s.messages.append(f"deployed {sid} on {verdict.deployed_symbols}")
         else:
-            # rejected (or at cap) → graveyard so it isn't re-proposed
             reason = "no profitable symbol OOS" if not verdict.passed else "active cap reached"
             registry.write_spec_note(verdict, spec, status="rejected",
                                      created=str(date.today()), graveyard=True,
@@ -244,10 +297,39 @@ def run_researcher(*, registry: StrategyRegistry, universe: list[str],
             s.rejected += 1
             s.messages.append(f"graveyard {sid}: {reason}")
 
-    cov_after = registry.coverage(registry.load_active_specs(), universe)
-    s.coverage_after = len(cov_after.covered)
+    # coverage_after from the digest (kept current incrementally by the deploy writes)
+    s.coverage_after = len(digest.load()["coverage"]["covered"])
+    if weekly and critic is not None:
+        _run_critic(registry, digest, critic, s)
     s.note_rel = _write_research_note(registry.vault, s, regime)
     return s
+
+
+def _run_critic(registry: StrategyRegistry, digest: ResearchDigest,
+                critic: Callable[[str, str], str], s: ResearcherSummary) -> None:
+    """Completeness-critic (§6.2): a SEPARATE stateless step compares the digest against a
+    sample of raw notes and answers 'is anything decision-relevant missing or misrepresented?'
+    Its finding is LOGGED only (it never edits the digest or gates anything)."""
+    try:
+        digest_text = digest.render(digest.load())
+        sample = _sample_raw_notes(registry.vault, limit=5)
+        finding = critic(digest_text, sample)
+        if finding and finding.strip():
+            s.messages.append(f"completeness-critic: {finding.strip()[:400]}")
+    except Exception as e:  # noqa: BLE001 — auditor must never break the run
+        log.warning("completeness-critic failed (non-fatal): %s", e)
+
+
+def _sample_raw_notes(vault: VaultWriter, *, limit: int = 5) -> str:
+    """A small sample of raw strategy/graveyard notes for the critic to compare against."""
+    out: list[str] = []
+    for sub in ("Strategies", "Strategies/Graveyard"):
+        folder = vault.root / sub
+        if not folder.exists():
+            continue
+        for p in sorted(folder.glob("*.md"))[:limit]:
+            out.append(f"--- {p.name} ---\n" + p.read_text(encoding="utf-8")[:800])
+    return "\n\n".join(out)
 
 
 def _write_research_note(vault: VaultWriter, s: ResearcherSummary, regime: str) -> str:
@@ -257,15 +339,42 @@ def _write_research_note(vault: VaultWriter, s: ResearcherSummary, regime: str) 
           "proposed": s.proposed, "valid": s.valid, "deployed": s.deployed,
           "improved": s.improved, "rejected": s.rejected,
           "coverage_before": s.coverage_before, "coverage_after": s.coverage_after,
+          "digest_tokens": s.digest_tokens, "re_proposed_rejected": s.re_proposed_rejected,
+          "near_dup_active": s.near_dup_active, "digest_drift": s.digest_drift,
           "tags": ["research", "researcher"]}
     body = (
         f"## Researcher run ({s.cadence})\n{s.line()}\n\n"
         f"Regime: {regime}\n\n"
         f"Uncovered at start ({len(s.uncovered_before)}): {s.uncovered_before}\n\n"
+        f"Context source: `_context/RESEARCH-DIGEST.md` ({s.digest_tokens} tokens) — "
+        "proposal context read from the digest only; gate/registry still read real notes.\n\n"
         "## Log\n" + "\n".join(f"- {m}" for m in s.messages) + "\n"
     )
     vault.write_note(rel, fm, body)
     return rel
+
+
+def completeness_critic_claude(digest_text: str, sample: str, *, model: str | None = None,
+                               timeout: int = 180) -> str:
+    """A SEPARATE stateless `claude -p` auditor (§6.2): compares the digest against a sample
+    of raw notes and answers one question. Output is LOGGED only — never edits the digest,
+    never gates anything. Returns '' on any failure (best-effort)."""
+    prompt = (
+        "You are a completeness auditor for a research digest. The digest is a compressed "
+        "view of the vault's strategy/graveyard notes, used to decide what new strategies to "
+        "propose. Compare the DIGEST against the SAMPLE of raw notes and answer ONE question "
+        "in 1-3 sentences: is anything DECISION-RELEVANT missing or misrepresented in the "
+        "digest (e.g. a rejected family not reflected, a coverage error)? If it looks faithful, "
+        f"say 'faithful'.\n\n=== DIGEST ===\n{digest_text[:6000]}\n\n=== SAMPLE NOTES ===\n{sample[:6000]}"
+    )
+    cmd = ["claude", "-p", prompt]
+    if model:
+        cmd += ["--model", model]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return proc.stdout.strip() if proc.returncode == 0 else ""
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return ""
 
 
 def main(weekly: bool = False) -> int:
@@ -302,8 +411,10 @@ def main(weekly: bool = False) -> int:
         return call_research_desk(ctx, max_proposals=max_props, model=model)
 
     cadence = "weekly" if weekly else "daily"
+    # completeness-critic runs in weekly-deep ONLY (LLM-as-auditor, logged, never gates)
+    critic = (lambda dt, sm: completeness_critic_claude(dt, sm, model=model)) if weekly else None
     summary = run_researcher(registry=registry, universe=universe, frames=frames,
-                             proposer=proposer, cadence=cadence)
+                             proposer=proposer, cadence=cadence, critic=critic)
     log.info(summary.line())
     for m in summary.messages:
         log.info("  %s", m)

@@ -271,5 +271,19 @@ late-phase deliverable (venv, deps, `.env`, `kite_login.py`, `VAULT_PATH`, Task 
     "Run whether user is logged on or not" in the GUI (needs the account password — manual).
 - ✅ Spec **§7.3 reconciled** (repo + vault copies): added `forward-test` status +
   `spec:`/`deployed_symbols:` frontmatter block; `live` left reserved/unwired.
+- ✅ **Context digest (CONTEXT-DIGEST-SPEC addendum) BUILT, TESTED, LIVE:** `vault/digest.py`
+  maintains `<VAULT>/_context/RESEARCH-DIGEST.md` — the researcher's six decision inputs
+  (universe, coverage, active, rejected-rollup, regime, perf) as a Python-maintained
+  materialized VIEW, bounded by novelty-keyed rollup (`agent/strategy_spec.novelty_key`) +
+  a token cap (`DIGEST_TOKEN_CAP`, binary-search compaction, drops logged). `VaultWriter`
+  updates it atomically on every write (fail-safe — a digest error never breaks the note
+  write). `scripts/researcher.py` reads ONLY the digest for proposal context (prompt size
+  decoupled from vault size), while the gate + `registry.load_active_specs` still read the
+  REAL notes — **the digest shapes WHAT is proposed, never WHAT deploys** (truth-vs-view
+  boundary; a stale digest can only waste a cycle). Weekly-deep does `rebuild_from_vault` +
+  rebuild-and-diff → `system-alert` on drift, plus a stateless completeness-critic
+  (`claude -p`, logged, never gates) and re-proposal/near-dup telemetry. **+40 tests; /qa
+  green; verified live** (digest bootstrapped, proposal from digest at ~700 tok, proposed→
+  gated→graveyarded with no human step).
 - **Only recurring manual step:** the ~30s daily Kite login (`kite_login.py`) — token expires
   ~6 AM IST; the 07:30 ntfy reminder pings the phone.
