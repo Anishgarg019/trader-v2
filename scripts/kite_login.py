@@ -68,10 +68,12 @@ def main() -> int:
     if ENV_PATH.exists():
         set_key(str(ENV_PATH), "KITE_ACCESS_TOKEN", access_token)
 
-    # Confirm read access (no orders placed).
+    # Confirm read access (no orders placed). Use ASCII only — a unicode ✅ crashes on the
+    # Windows cp1252 console (UnicodeEncodeError), which would make a SUCCESSFUL login exit
+    # non-zero and look like a failure (seen 2026-06-01).
     kite.set_access_token(access_token)
     profile = kite.profile()
-    print(f"\n✅ Logged in as {profile.get('user_name')} ({profile.get('user_id')}).")
+    print(f"\n[OK] Logged in as {profile.get('user_name')} ({profile.get('user_id')}).")
     print(f"   Access token written to {TOKEN_PATH.name} and .env (KITE_ACCESS_TOKEN).")
     print("   Token expires ~6 AM IST tomorrow — rerun this script daily.\n")
     return 0
