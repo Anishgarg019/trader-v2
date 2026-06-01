@@ -120,3 +120,23 @@ def test_graveyard_note_not_loaded_as_active(vault):
     reg.write_spec_note(verdict, LONGBIAS, status=FORWARD_TEST, graveyard=True)
     active = reg.load_active_specs()
     assert active == []
+
+
+def test_win_loss_table_handles_errored_symbol(vault):
+    """A per-symbol backtest that errored has empty oos_metrics — the note must still render
+    (regression for the None-format crash seen 2026-06-01)."""
+    from agent.registry import _win_loss_table
+    from backtest.research import ResearchVerdict, SymbolVerdict
+    verdict = ResearchVerdict(
+        spec_id="sX", n_params=2,
+        per_symbol={
+            "NSE:OK": SymbolVerdict("OK", False, {"total_return": 0.1},
+                                    {"total_return": -0.05, "trades": 12}, None, ""),
+            "NSE:ERR": SymbolVerdict("ERR", False, {}, {}, None, "backtest error: bad data"),
+        },
+        deployed_symbols=[], passed=False, notes="x")
+    table = _win_loss_table(verdict)        # must not raise
+    assert "NSE:ERR" in table and "NSE:OK" in table
+    # and a full write must succeed too
+    reg = StrategyRegistry(vault)
+    reg.write_spec_note(verdict, {**LONGBIAS, "id": "sX"}, status="rejected", graveyard=True)

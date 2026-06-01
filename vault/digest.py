@@ -210,54 +210,58 @@ class ResearchDigest:
         if uni:
             data["universe"] = list(uni.get("names") or [])
 
-        # active forward-tests (Strategies/*.md, NOT Graveyard)
+        buckets: dict[str, dict] = {}
+
+        def _into_rejected(fm: dict, rel: str, lesson: str) -> None:
+            spec = fm["spec"]
+            symbols = fm.get("tested_symbols") or fm.get("deployed_symbols") or []
+            key = novelty_key(spec, symbols)
+            when = str(fm.get("created") or "")
+            b = buckets.get(key)
+            if b is None:
+                b = {"key": key, "tried": 0, "last": when, "lesson": "", "examples": []}
+                buckets[key] = b
+            b["tried"] += 1
+            b["last"] = max(str(b["last"] or ""), when) or when
+            if lesson:
+                b["lesson"] = lesson[:_LESSON_CAP]
+            if len(b["examples"]) < MAX_REJECTED_EXAMPLES:
+                b["examples"].append(rel)
+
+        # top-level Strategies/*.md: forward-test → active; retired/rejected → rejected rollup
+        # (so a retired strategy's lesson is NOT lost — completeness-critic finding 2026-06-01).
         sdir = self.root / "Strategies"
         if sdir.exists():
             for p in sorted(sdir.glob("*.md")):
                 fm = self._read_fm(p)
-                if not fm or fm.get("type") != "strategy":
+                if not fm or fm.get("type") != "strategy" or not fm.get("spec"):
                     continue
-                if fm.get("status") != "forward-test" or not fm.get("spec"):
-                    continue
+                status = fm.get("status")
                 rel = self._rel(p)
-                bt = fm.get("backtest") or {}
-                recent = {"trades_30d": None, "win_rate_30d": None,
-                          "oos_sharpe": bt.get("sharpe_like")}
-                deployed = list(fm.get("deployed_symbols") or [])
-                data["active"].append({
-                    "id": fm.get("id"), "family": list(fm.get("families") or []),
-                    "key": novelty_key(fm["spec"], deployed),
-                    "deployed_symbols": deployed, "recent": recent, "note": rel,
-                })
+                if status == "forward-test":
+                    bt = fm.get("backtest") or {}
+                    deployed = list(fm.get("deployed_symbols") or [])
+                    data["active"].append({
+                        "id": fm.get("id"), "family": list(fm.get("families") or []),
+                        "key": novelty_key(fm["spec"], deployed),
+                        "deployed_symbols": deployed,
+                        "recent": {"trades_30d": None, "win_rate_30d": None,
+                                   "oos_sharpe": bt.get("sharpe_like")},
+                        "note": rel})
+                elif status in ("retired", "rejected"):
+                    _into_rejected(fm, rel, f"{status}: " + self._lesson_from_fm(fm))
             data["active"].sort(key=lambda a: str(a.get("id")))
 
-        # rejected graveyard (rolled up by novelty key, one pass → exact counts)
+        # Graveyard/*.md → rejected rollup (one pass → exact counts)
         gdir = self.root / "Strategies" / "Graveyard"
-        buckets: dict[str, dict] = {}
         if gdir.exists():
             for p in sorted(gdir.glob("*.md")):
                 fm = self._read_fm(p)
-                if not fm or not fm.get("spec"):
-                    continue
-                spec = fm["spec"]
-                symbols = fm.get("tested_symbols") or fm.get("deployed_symbols") or []
-                key = novelty_key(spec, symbols)
-                rel = self._rel(p)
-                when = str(fm.get("created") or "")
-                lesson = self._lesson_from_fm(fm)
-                b = buckets.get(key)
-                if b is None:
-                    b = {"key": key, "tried": 0, "last": when, "lesson": "", "examples": []}
-                    buckets[key] = b
-                b["tried"] += 1
-                b["last"] = max(str(b["last"] or ""), when) or when
-                if lesson:
-                    b["lesson"] = lesson[:_LESSON_CAP]
-                if len(b["examples"]) < MAX_REJECTED_EXAMPLES:
-                    b["examples"].append(rel)
+                if fm and fm.get("spec"):
+                    _into_rejected(fm, self._rel(p), self._lesson_from_fm(fm))
+
         data["rejected"] = sorted(buckets.values(), key=lambda b: str(b.get("last") or ""),
                                   reverse=True)
-
         self._recompute_coverage(data)
         self.save(data)
         return data

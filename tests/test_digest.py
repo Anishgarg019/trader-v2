@@ -160,3 +160,21 @@ def test_render_and_measure(dg):
     assert "Uncovered" in text
     assert dg.measure() > 0
     assert dg.measure() <= DIGEST_TOKEN_CAP
+
+
+def test_retired_strategy_folds_into_rejected_rollup(tmp_path):
+    """A retired strategy (stays in Strategies/, status=retired) must appear in the rejected
+    rollup so its lesson isn't lost (completeness-critic finding 2026-06-01)."""
+    root = tmp_path / "vault"
+    vault = VaultWriter(root); vault.ensure_structure()
+    vault.write_note("Universe/current-universe.md",
+                     {"type": "universe", "names": ["NSE:UP"]}, "x")
+    vault.write_strategy_note(strategy_id="s001", name="s001", status="retired",
+                              families=["mean-reversion"],
+                              frontmatter_extra={"spec": RSI("s001"), "deployed_symbols": [],
+                                                 "tested_symbols": ["NSE:UP"]})
+    data = ResearchDigest(root).rebuild_from_vault()
+    assert data["active"] == []                       # retired → not active
+    assert len(data["rejected"]) == 1                 # but recorded as a tried/failed family
+    assert "retired" in data["rejected"][0]["lesson"]
+    assert "Strategies/s001" in data["rejected"][0]["examples"][0]

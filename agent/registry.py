@@ -75,8 +75,11 @@ def _win_loss_table(verdict) -> str:
         ret = v.oos_metrics.get("total_return")
         trades = v.oos_metrics.get("trades")
         flags = ",".join(v.overfit.flags) if v.overfit else "error"
+        # a symbol that errored / had too little data has empty metrics → render '-', don't crash
+        ret_s = f"{ret:.4f}" if ret is not None else "-"
+        trades_s = str(int(trades)) if trades is not None else "-"
         rows.append(f"| {name} | {'✅' if v.passed else '—'} | "
-                    f"{ret:.4f} | {int(trades) if trades is not None else '-'} | {flags or 'clean'} |")
+                    f"{ret_s} | {trades_s} | {flags or 'clean'} |")
     return "\n".join(rows)
 
 
