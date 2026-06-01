@@ -33,6 +33,7 @@ from agent.logging_setup import get_logger
 from agent.broker.kite_client import KiteDataClient
 from agent.broker.paper_broker import PaperBroker
 from agent.execution import ExecutionEngine
+from agent.kite_session import KiteSession, token_from_file
 from agent.loop import Orchestrator
 from agent.registry import StrategyRegistry
 from agent.live_strategies import build_history_fn, build_strategy_fn
@@ -44,6 +45,7 @@ from vault.writer import VaultWriter
 log = get_logger()
 STATE_PATH = REPO_ROOT / ".loop_state.json"
 PAPER_BOOK_PATH = REPO_ROOT / ".paper_book.json"
+TOKEN_PATH = REPO_ROOT / ".kite_token.json"
 
 
 def _load_universe(vault: VaultWriter) -> list[str] | None:
@@ -78,11 +80,16 @@ def main(walk_day: bool = False, watch: bool = False, interval: int = 60) -> int
         log.error("Missing KITE_API_KEY / KITE_ACCESS_TOKEN. Run scripts/kite_login.py first.")
         return 1
 
-    kite = KiteDataClient(api_key=s.kite_api_key, access_token=s.kite_access_token)
+    # Hot-reloadable read-only session: if the daily login happens AFTER this process starts
+    # (late login), `session.reload()` (called each watch pass) picks up the fresh token and
+    # rebuilds the client — no restart needed. All read access goes through `session`.
+    session = KiteSession(s.kite_api_key, s.kite_access_token,
+                          client_factory=lambda k, t: KiteDataClient(api_key=k, access_token=t),
+                          token_loader=token_from_file(TOKEN_PATH))
     starting = float(s.config.get("capital", {}).get("starting_inr", 100000))
 
     def price_fn(exch_symbol: str) -> float:
-        data = call_with_retries(lambda: kite.ltp([exch_symbol]))
+        data = call_with_retries(lambda: session.ltp([exch_symbol]))
         return float(data[exch_symbol]["last_price"])
 
     broker = PaperBroker(starting_cash=starting, price_fn=price_fn)
@@ -91,8 +98,8 @@ def main(walk_day: bool = False, watch: bool = False, interval: int = 60) -> int
                  broker.cash, len(broker.get_positions()))
     vault = VaultWriter(s.vault_path)
     vault.ensure_structure()
-    execu = ExecutionEngine(broker, vault, kite_client=kite, mode=s.mode)
-    orch = Orchestrator(broker=broker, vault=vault, execution=execu, kite_client=kite,
+    execu = ExecutionEngine(broker, vault, kite_client=session, mode=s.mode)
+    orch = Orchestrator(broker=broker, vault=vault, execution=execu, kite_client=session,
                         universe=_load_universe(vault), price_fn=price_fn, mode=s.mode)
     runner = orch.run_day if walk_day else orch.run_once
 
@@ -100,7 +107,7 @@ def main(walk_day: bool = False, watch: bool = False, interval: int = 60) -> int
     # with a compiled `spec:` block, trading only its gate-proven `deployed_symbols`.
     registry = StrategyRegistry(vault)
     active = registry.load_active_specs()
-    history_fn = build_history_fn(kite)
+    history_fn = build_history_fn(session)
     strategy_fn = build_strategy_fn(active, history_fn=history_fn, broker=broker,
                                     vault=vault, state_dir=str(REPO_ROOT))
     log.info("registry: %d active forward-test spec(s): %s", len(active),
@@ -110,12 +117,14 @@ def main(walk_day: bool = False, watch: bool = False, interval: int = 60) -> int
         if not orch.universe:
             return None
         try:
-            return call_with_retries(lambda: kite.quote(orch.universe))
+            return call_with_retries(lambda: session.quote(orch.universe))
         except Exception as e:  # noqa: BLE001
             log.warning("universe quote probe failed: %s", e)
             return None
 
     def one_pass() -> None:
+        if session.reload():   # late login → swap in the fresh token, keep trading the session
+            log.info("picked up a refreshed Kite token (late login) — rebuilt read-only client")
         state = load_state(STATE_PATH)
         now = datetime.now(IST)
         result = runner(now, state=state, strategy_fn=strategy_fn, quotes=fetch_quotes())
