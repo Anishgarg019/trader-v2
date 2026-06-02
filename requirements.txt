@@ -3,7 +3,6 @@ numpy>=1.24
 kiteconnect>=4.2
 pyyaml>=6.0
 python-dotenv>=1.0
-pyotp>=2.9          # unattended daily Kite login (scripts/auto_login.py, TOTP 2FA)
 pytest>=7.0
 # Dashboard publishing (only needed if DASHBOARD_DB_URL is set to a Postgres/Supabase URL)
 psycopg[binary]>=3.1

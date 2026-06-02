@@ -25,21 +25,10 @@ class Settings:
     kite_access_token: str | None
     vault_path: Path
     config: dict[str, Any]
-    # Optional credentials for UNATTENDED daily login (scripts/auto_login.py). Only used to
-    # MINT the daily read-only access token via TOTP — never to place orders (the Kite client
-    # still has no order methods; orders go only to PaperBroker). Stored in .env (gitignored).
-    kite_user_id: str | None = None
-    kite_password: str | None = None
-    kite_totp_secret: str | None = None
 
     @property
     def is_paper(self) -> bool:
         return self.mode.strip().lower() == "paper"
-
-    @property
-    def can_auto_login(self) -> bool:
-        return bool(self.kite_api_key and self.kite_api_secret and self.kite_user_id
-                    and self.kite_password and self.kite_totp_secret)
 
 
 def load_settings(config_path: Path | str = DEFAULT_CONFIG_PATH,
@@ -70,7 +59,4 @@ def load_settings(config_path: Path | str = DEFAULT_CONFIG_PATH,
         kite_access_token=os.environ.get("KITE_ACCESS_TOKEN") or None,
         vault_path=vault_path,
         config=config,
-        kite_user_id=os.environ.get("KITE_USER_ID") or None,
-        kite_password=os.environ.get("KITE_PASSWORD") or None,
-        kite_totp_secret=os.environ.get("KITE_TOTP_SECRET") or None,
     )

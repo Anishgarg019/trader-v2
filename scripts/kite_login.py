@@ -11,14 +11,25 @@ This script only authenticates and reads `profile()` to confirm. It places NO or
 """
 from __future__ import annotations
 
+import json
 import sys
+import urllib.parse
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from dotenv import load_dotenv, set_key
 
-from dotenv import load_dotenv
 
-from agent.kite_auth import extract_request_token, persist_session
+def extract_request_token(raw: str) -> str:
+    """Accept the bare request_token OR the full redirect URL / query string and return
+    just the token. Kite redirects to e.g.
+    https://127.0.0.1/?action=login&status=success&request_token=ABC123 — pasting that
+    whole thing should work."""
+    raw = raw.strip()
+    if "request_token=" not in raw:
+        return raw
+    parsed = urllib.parse.urlparse(raw)
+    query = parsed.query or raw  # bare "request_token=..." has no scheme → query is empty
+    return urllib.parse.parse_qs(query).get("request_token", [raw])[0]
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ENV_PATH = REPO_ROOT / ".env"
@@ -40,20 +51,31 @@ def main() -> int:
     print("\n1) Open this URL, log in, and authorize:\n")
     print("   " + kite.login_url() + "\n")
     print("2) After redirect, copy the `request_token` value from the URL.\n")
-    request_token = extract_request_token(
-        input("Paste the request_token (or the full redirect URL) here: "))
+    pasted = input("Paste the request_token (or the full redirect URL) here: ").strip()
+    request_token = extract_request_token(pasted)
     if not request_token:
         print("ERROR: no request_token provided.", file=sys.stderr)
         return 1
 
-    # Exchange + persist (shared with scripts/auto_login.py). ASCII only — a unicode ✅
-    # crashes the Windows cp1252 console, making a SUCCESSFUL login look like a failure.
-    data = persist_session(api_key=api_key, api_secret=api_secret,
-                           request_token=request_token, env_path=ENV_PATH,
-                           token_path=TOKEN_PATH, kite=kite)
-    print(f"\n[OK] Logged in as {data.get('user_name')} ({data.get('user_id')}).")
+    data = kite.generate_session(request_token, api_secret=api_secret)
+    access_token = data["access_token"]
+
+    TOKEN_PATH.write_text(json.dumps({
+        "access_token": access_token,
+        "user_id": data.get("user_id"),
+        "login_time": str(data.get("login_time")),
+    }, indent=2))
+    if ENV_PATH.exists():
+        set_key(str(ENV_PATH), "KITE_ACCESS_TOKEN", access_token)
+
+    # Confirm read access (no orders placed). ASCII only — a unicode ✅ crashes on the Windows
+    # cp1252 console (UnicodeEncodeError), which would make a SUCCESSFUL login exit non-zero
+    # and look like a failure (seen 2026-06-01).
+    kite.set_access_token(access_token)
+    profile = kite.profile()
+    print(f"\n[OK] Logged in as {profile.get('user_name')} ({profile.get('user_id')}).")
     print(f"   Access token written to {TOKEN_PATH.name} and .env (KITE_ACCESS_TOKEN).")
-    print("   Token expires ~6 AM IST tomorrow.  Unattended? scripts/auto_login.py mints it for you.\n")
+    print("   Token expires ~6 AM IST tomorrow — rerun this script daily.\n")
     return 0
 
 
