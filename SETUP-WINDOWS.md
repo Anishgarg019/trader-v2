@@ -48,12 +48,26 @@ copy "00 - Trading Agent Spec.md" "%VAULT_PATH%\"
 ```
 
 ## 5. Daily Kite login (mints the access token)
-Kite access tokens expire ~6 AM IST, so this runs **once each trading day**:
+Kite access tokens expire ~6 AM IST, so a fresh one is needed **once each trading day**.
+
+**Recommended — fully automatic (no daily action):** set `KITE_USER_ID`, `KITE_PASSWORD`,
+`KITE_TOTP_SECRET` in `.env` (see `.env.example`). The scheduled `scripts/auto_login.py`
+(07:00 IST) then mints the token headlessly via TOTP every morning — you never log in by
+hand. `KITE_TOTP_SECRET` is the **base32 seed** behind your Zerodha 2FA (the "enter this key
+manually" string when setting up the authenticator app), not a 6-digit code. Test it once:
+```powershell
+python scripts\auto_login.py        # should print "auto-login OK — token refreshed ..."
+```
+A 07:30 watchdog (`scripts/notify_login.py`) re-checks the token and only pings your phone
+(ntfy) if it's still invalid — i.e. auto-login failed — so a healthy morning is silent.
+
+**Fallback — manual:** if you don't set those creds, log in by hand each trading day:
 ```powershell
 python scripts\kite_login.py
 ```
-Open the printed URL, log in, authorize; copy the `request_token` from the redirect URL and
-paste it back. It writes `KITE_ACCESS_TOKEN` into `.env` and `.kite_token.json`.
+Open the printed URL, log in, authorize; paste the `request_token`/redirect URL back. Either
+path writes `KITE_ACCESS_TOKEN` into `.env` and `.kite_token.json`. (The `--watch` loop also
+hot-reloads the token mid-session, so a late login is picked up within ~60s without a restart.)
 
 ## 6. Verify (read-only, no orders)
 ```powershell
@@ -76,21 +90,27 @@ forward-test.
 
 ## 8. Schedule it (Task Scheduler) — all IST (this box's clock = IST)
 
-Four scheduled tasks make the service hands-off except the ~30-second daily Kite login:
+Five scheduled tasks make the service **fully hands-off** once `KITE_USER_ID`/`KITE_PASSWORD`/
+`KITE_TOTP_SECRET` are set (§5) — including the daily login:
 
 | Task | When (IST) | Command |
 |------|-----------|---------|
-| `Trader - login reminder` | 07:30 daily | `python scripts\notify_login.py` (ntfy push to your phone) |
+| `Trader - auto login` | 07:00 daily | `python scripts\auto_login.py` (mints today's token via TOTP — no human action) |
+| `Trader - login reminder` | 07:30 daily | `python scripts\notify_login.py` (WATCHDOG: pings only if the token is still invalid) |
 | `Trader - daily loop` | 08:15 daily | `python scripts\run_loop.py --watch 60` (T-60m; watches through the session) |
 | `Trader - researcher daily` | 16:15 Mon–Sat | `python scripts\researcher.py` (daily-light: decay/coverage + small top-up) |
 | `Trader - researcher weekly` | 16:15 Sun | `python scripts\researcher.py --weekly` (full proposals + improvement pass) |
 
-The two **researcher** tasks were created by this build:
+⚠️ **Create tasks with a SPACE between the exe and the script** (a malformed `python.exeC:\...py`
+with no space fails silently with exit code 2 — the bug that caused missed logins on
+2026-06-01/02). All tasks were (re)created cleanly like this:
 ```powershell
 $py = "C:\Users\Anish\Documents\trader-v2\.venv\Scripts\python.exe"
-$rs = "C:\Users\Anish\Documents\trader-v2\scripts\researcher.py"
-schtasks /create /tn "Trader - researcher daily"  /tr "`"$py`" `"$rs`""          /sc WEEKLY /d MON,TUE,WED,THU,FRI,SAT /st 16:15 /f
-schtasks /create /tn "Trader - researcher weekly" /tr "`"$py`" `"$rs`" --weekly"  /sc WEEKLY /d SUN                  /st 16:15 /f
+schtasks /create /tn "Trader - auto login"      /tr "`"$py`" `"...\scripts\auto_login.py`""           /sc DAILY  /st 07:00 /f
+schtasks /create /tn "Trader - login reminder"  /tr "`"$py`" `"...\scripts\notify_login.py`""          /sc DAILY  /st 07:30 /f
+schtasks /create /tn "Trader - daily loop"      /tr "`"$py`" `"...\scripts\run_loop.py`" --watch 60"   /sc DAILY  /st 08:15 /f
+schtasks /create /tn "Trader - researcher daily"  /tr "`"$py`" `"...\scripts\researcher.py`""          /sc WEEKLY /d MON,TUE,WED,THU,FRI,SAT /st 16:15 /f
+schtasks /create /tn "Trader - researcher weekly" /tr "`"$py`" `"...\scripts\researcher.py`" --weekly" /sc WEEKLY /d SUN                  /st 16:15 /f
 ```
 (Daily-light runs Mon–Sat and weekly-deep runs Sun, so they never double-fire on Sunday.)
 
