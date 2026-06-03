@@ -1,93 +1,86 @@
-# Session Handoff — 2026-05-31 (Mac architect session, late)
+# Session Handoff — 2026-06-03 ~03:05 UTC (Windows prod box)
 
 ## TL;DR
-System is **built, deployed, and live** (Windows Task Scheduler + Supabase + Streamlit).
-This Mac session turned the Phase 11 design (previously trapped in chat) into **durable,
-build-ready files** and locked four user decisions about how the autonomous researcher
-deploys and improves strategies. **Nothing built in code this session** (Phase 11 is a
-Windows build); **nothing pushed from Mac.** The single most important next thing: **build
-Phase 11 on Windows from `RESEARCHER-SPEC.md`**, and **fix s001's status (`live` →
-`forward-test`)**.
+This session built the **context digest** (Phase 11 §8 addendum) and then spent the rest
+firefighting **why the live agent kept going blind each morning**. Root cause found + fixed:
+the `Trader - login reminder` scheduled task had a **malformed command** (python exe glued to
+the script path, no space → exit 2), so the user was never nudged → never did the manual Kite
+login → token expired → loop ran blind. All fixed; manual-login-only is the locked choice.
+**Next session's first job: BUILD THE "Strategies / Research" DASHBOARD TAB** (designed below,
+user asked for it, awaiting go-ahead — they implicitly greenlit via the `/handoff` arg).
 
-## ⚠️ Where the durable artifacts now live (carry these to Windows)
-- **`RESEARCHER-SPEC.md`** (repo root) — the full, build-ready Phase 11 spec, grounded
-  against the real code (signal signatures, `run_backtest`, `overfit_report`,
-  `write_strategy_note`, the `strategy_fn(ctx)` loop contract).
-- **`prompts/research_desk_system.md`** — the headless-Claude "constitution" (system prompt).
-- Both are **untracked on Mac** (not committed, not pushed). `CLAUDE.md` §8 was also edited
-  (uncommitted). The s002 thesis and Phase 11 design are **no longer chat-only** — they're
-  in these files.
-
-## Decisions locked this session (user, 2026-05-31)
-1. **No `live`, don't even wire it in.** Researcher deploys to `forward-test` only; nothing
-   reads/writes `live` until the user explicitly asks. No `promote.py`, no promotion path.
-2. **No s002.** The autonomous researcher invents its own strategies. **s001 is the only
-   hand-written seed**, kept purely to validate the DSL/compiler against a known result.
-3. **Per-symbol deployment.** Backtest each strategy on every universe stock independently;
-   deploy it **only on the stocks it's profitable on** (`deployed_symbols`), never the ones
-   it lost on. Empty set → reject to graveyard. **`MIN_SYMBOLS = 1`** (locked) — deploy on
-   even a single profitable stock; the paper forward-test + decay monitor catch flukes.
-4. **Cover the rest + keep improving.** Stocks with no profitable strategy ("uncovered")
-   are the priority target for new strategies. Profitable-but-mediocre strategies get an
-   **improvement loop** (`backtest/optimize.py`, §8.5) — variants accepted **only on
-   out-of-sample gain, with no added knobs** (guarded against curve-fitting; it's safety
-   invariant #7).
-5. **Param-count rule:** count only deliberately-tunable knobs (thresholds, `atr_k`);
-   conventional lengths (14/20/50/200) are fixed structure, excluded from `n_params`.
-
-## Carried-over earlier decisions (still hold)
-- **Dev is on Windows; Mac is secondary.** Commit/push from Windows; **don't push from Mac.**
-- **Safety model for Phase 11:** Claude proposes strategies as a constrained JSON DSL over
-  the signal library; deterministic Python compiles + backtests + gates; **the execution
-  path only ever runs the compiled DSL, never LLM-written code; the overfit gate is code.**
-- **Auto-deploy ceiling is `forward-test`** (paper). Guardrails (ATR sizing, stops, drawdown
-  governor) stay ON; every order justified + journaled.
+## Decisions made this session (not yet fully in CLAUDE.md → promote)
+- **Manual 07:30 Kite login ONLY.** User explicitly rejected unattended TOTP auto-login
+  ("no, i only want the 730am manual login with no failures"). The auto-login work
+  (auto_login.py, kite_auth.py, pyotp, KITE_USER_ID/PASSWORD/TOTP_SECRET) was BUILT then
+  fully REVERTED (commit 1396e1b). Do **not** re-propose auto-login. → promote to CLAUDE.md.
+- **s001 RETIRED** (reversible). It was deployed on all 10 symbols as a "pipeline proof" but
+  never fires and falsely marked the whole universe "covered," starving the researcher of
+  uncovered targets. Set `status: retired`, `deployed_symbols: []`. Now 0 active forward-tests;
+  all 10 names uncovered → researcher targets them. → promote to CLAUDE.md.
+- **Scheduler gotcha (durable):** always create tasks with a SPACE between the exe and script
+  (`"py.exe" "script.py"`). A glued `py.exeC:\...py` fails silently with exit code 2. → promote.
 
 ## Current phase & status
-- **Phase 11 (autonomous researcher): DESIGNED + spec'd, NOT built.** Build it on Windows
-  per `RESEARCHER-SPEC.md` §11 checklist.
-- **s001: deployed on Windows, UNCOMMITTED/UNPUSHED, mislabeled `status: live`.** It FAILED
-  OOS (0/10) → must be **`forward-test`** (pipeline proof, not edge; rarely opens — by design).
-- Tests on Windows last seen: 191 passed / 2 skipped (pre-Phase-11).
+- **Phase 11 + context-digest: BUILT, TESTED, LIVE.** 336 passed / 2 skipped. Tree clean,
+  in sync with origin/main @ `1396e1b`.
+- **Live service running** on Task Scheduler (all IST; box clock = IST):
+  - `Trader - login reminder` 07:30 daily — RECREATED clean (was the bug); unconditional ntfy
+    nudge + retry/backoff. Verified result 0.
+  - `Trader - daily loop` 08:15 daily — `run_loop.py --watch 60` (recreated; the old one ran
+    without --watch so only did pre-market). Currently RUNNING today on a valid token.
+  - `Trader - researcher daily` 16:15 Mon–Sat, `Trader - researcher weekly` 16:15 Sun.
+- **Today (06-03): logged in, token valid, loop running + publishing**, pre-market at handoff.
+- Vault: **0 active forward-tests**, graveyard = s002–s013 (researcher has been proposing +
+  gate-rejecting; nothing has passed the strict OOS gate — expected/by design).
 
-## Phase 11 build order (from RESEARCHER-SPEC.md §2/§11)
-`agent/strategy_spec.py` (DSL + validator + `count_params`) → `agent/strategy_compiler.py`
-(entries/exits + `strategy_fn_factory(deployed_symbols=…)`) → `backtest/research.py`
-(`evaluate_spec(spec, frames)` → per-symbol gate → `deployed_symbols`) → `agent/registry.py`
-(`spec:` + `deployed_symbols:` frontmatter, `load_active_specs` forward-test only,
-`coverage()`) → re-express s001 as a spec (then retire the hand-written version) → wire
-`scripts/run_loop.py` `strategy_fn` from the registry → `scripts/researcher.py`
-(coverage-targeted proposals + caps) → `backtest/optimize.py` (improvement loop §8.5) →
-drop `prompts/research_desk_system.md` in place → Task Scheduler (daily ~16:15 + weekly Sun,
-improvement pass weekly only) → tests (incl. `test_optimize.py` curve-fitting guard) → `/qa`.
+## In-flight / partially done
+- **NOTHING half-written.** All code committed + green. The only OPEN WORK is the new feature
+  below (not started).
+- **"Strategies / Research" dashboard tab — DESIGNED, NOT BUILT (the next task).** User asked:
+  "display strategies currently testing, accepted, rejected, reasoning, backtesting on the
+  dashboard." Plan (all source data already exists in the vault registry + digest + notes):
+  1. Schema (`dashboard/schema.sql`): add `strategies` table (id, name, status, families,
+     deployed_symbols, oos_return, oos_sharpe, symbols_deployed, symbols_tested, reasoning/
+     lesson, created, updated_at) + optional `research_runs` (date, cadence, proposed, valid,
+     deployed, rejected).
+  2. `dashboard/store.py`: add upsert + read methods for those tables.
+  3. `dashboard/publisher.py`: currently publishes PERF data only — extend to also push from
+     `StrategyRegistry.load_active_specs()` + graveyard notes + the research digest
+     (`_context/RESEARCH-DIGEST.md` rejected rollup) + research notes (`Research/*-researcher-*.md`).
+  4. `dashboard/app.py`: add a **"Strategies / Research"** tab — Testing (active), Rejected
+     (graveyard rollup with tried-count + lesson), per-strategy backtest (IS/OOS + win/loss-by-
+     symbol), and a research-run timeline.
+  5. **Backfill** the existing graveyard (s002–s013) so Rejected is populated immediately.
+  6. Tests in `tests/test_dashboard.py`; run `/qa`; verify it renders.
+  Note: this touches the LIVE dashboard (schema+publisher+app) — proceed per the user's
+  go-ahead (the `/handoff` arg "keep the strategies tab concept in mind" = build it next).
 
-## Next steps (ordered, actionable)
-1. **On Windows:** set s001 `status: forward-test`, then **commit + push** the s001 work so
-   origin/Mac catch up (resolves the divergence below). Also pull in the Mac-authored
-   `RESEARCHER-SPEC.md`, `prompts/research_desk_system.md`, and the `CLAUDE.md` edit.
-2. **Build Phase 11** per the build order above / `RESEARCHER-SPEC.md` §11.
-3. **Re-express s001 as a DSL spec** (validate compiler reproduces known result).
-4. **Reconcile spec §7.3:** add `forward-test` status + the `spec:` + `deployed_symbols:`
-   frontmatter block (leave `live` reserved/unwired).
+## Next steps (ordered)
+1. **Build the Strategies/Research dashboard tab** (plan above). Backfill s002–s013.
+2. Re-run `/qa`; confirm the tab renders against the live Supabase data.
+3. Commit + push from Windows.
+4. (Ongoing) Each trading day: user does the manual 07:30 login (now reliably reminded);
+   loop hot-reloads the token within ~60s if the login is late.
 
 ## Open questions / waiting on user
-- *(None blocking.)* Univ-pass fraction is GONE — superseded by per-symbol deployment; don't
-  reintroduce it. Resolved this session: research-desk prompt DRAFTED; live-gating NOT BUILT;
-  **`MIN_SYMBOLS = 1`** (locked).
+- Final explicit go-ahead to modify the live dashboard (assumed yes from the handoff arg).
+- Whether to widen the DSL/signal space later so strategies can actually pass the gate and
+  trade (currently everything is correctly gate-rejected; deployments are rare by design).
+- s001 is retired but reversible — restore as a 1-symbol canary only if the user asks.
 
-## Watch out for
-- **GIT DIVERGENCE:** origin + Mac are behind; **Windows has uncommitted, unpushed s001 work.**
-  The Mac-authored Phase 11 files + CLAUDE.md edit are **untracked/uncommitted on Mac**. Do
-  NOT push from Mac (would risk conflicting with Windows's uncommitted work). Reconcile on
-  Windows: push s001 first, then bring the Mac files over.
-- **NEVER place a real order.** Paper guard holds. Phase 11 boundary: execution runs ONLY the
-  compiled DSL — never code the LLM writes. The overfit gate + the improvement-acceptance
-  rule are code, not LLM judgment.
-- **The improvement loop is a curve-fitting trap if done wrong** (safety invariant #7):
-  accept a variant ONLY on out-of-sample gain, no extra knobs, all hard gates pass.
-  IS-only improvement never deploys. `test_optimize.py` must enforce this.
-- **Per-symbol:** a strategy trades ONLY its `deployed_symbols`; never the names it lost on.
-- **s001 `live` is wrong** → `forward-test`.
-- `sys.path.insert(0, repo_root)` needed atop scripts/app (entrypoint dir ≠ repo root).
-- Paper book is in-memory; `run_loop --watch` must be launched each trading morning.
-- Run `/qa` after each build; honesty rule applies.
+## Watch out for (gotchas)
+- **NEVER place a real order.** Read-only Kite (no order methods); orders only to PaperBroker.
+  The KiteSession hot-reload proxy is still read-only (assert_no_order_methods passes).
+- **Truth-vs-view boundary (digest):** the digest only shapes WHAT the researcher proposes;
+  the overfit gate + `registry.load_active_specs` read the REAL notes. A stale digest can
+  never cause a bad deploy. Never let the digest gate a deployment.
+- **No `live` status** — forward-test is the ceiling; registry refuses `live`.
+- **Scheduler:** SPACE between exe and script (exit-2 bug). Tasks are "Interactive only" (box
+  must be logged on) — user declined fully-headless (no stored creds).
+- **Daily login is the one manual step** — interactive `kite_login.py` can't take the pasted
+  token via the `!` runner (EOF); use the flow: generate login URL → user authorizes → pastes
+  redirect URL → complete with `echo "<redirect-url>" | python scripts/kite_login.py`.
+- **Token expires ~6 AM IST**; the `--watch` loop reads it once at startup but `session.reload()`
+  re-reads `.kite_token.json` each pass, so a late login is picked up (don't "fix" by restarting).
+- Researcher needs a valid token at 16:15 to fetch frames (else exits 1) — same login dependency.

@@ -287,3 +287,30 @@ late-phase deliverable (venv, deps, `.env`, `kite_login.py`, `VAULT_PATH`, Task 
   gated→graveyarded with no human step).
 - **Only recurring manual step:** the ~30s daily Kite login (`kite_login.py`) — token expires
   ~6 AM IST; the 07:30 ntfy reminder pings the phone.
+- ✅ **Live-ops hardening (2026-06-01→03):**
+  - **Root-caused the recurring "agent went blind each morning":** the `Trader - login
+    reminder` task command was MALFORMED (python exe glued to the script path, no space →
+    exit 2), so no nudge was ever sent → no manual login → token expired → loop ran blind.
+    **Gotcha (durable): always create Task Scheduler tasks with a SPACE between the exe and
+    the script.** All tasks recreated cleanly.
+  - `Trader - daily loop` recreated as `run_loop.py --watch 60` (the old one ran without
+    `--watch`, so it only did a pre-market pass and never traded the session).
+  - `run_loop.py` hot-reloads the token mid-`--watch` (`agent/kite_session.py` — read-only
+    proxy that re-reads `.kite_token.json` each pass), so a login done after 08:15 is picked
+    up within ~60s with no restart. `notify_login.py` retries the ntfy send (slow-network
+    boot) + `kite_login.py` prints ASCII `[OK]` (the ✅ emoji crashed the cp1252 console,
+    making a successful login exit non-zero).
+  - **Manual 07:30 login is the LOCKED choice (user 2026-06-02):** unattended TOTP auto-login
+    was built then fully REVERTED at the user's request ("no, i only want the 730am manual
+    login with no failures"). Do not re-propose auto-login / stored credentials.
+- ✅ **s001 RETIRED (2026-06-02, reversible):** it never fires and was deployed on all 10
+  symbols as a "pipeline proof," falsely marking the whole universe "covered" and starving the
+  researcher of uncovered targets. Now `status: retired`, `deployed_symbols: []` → 0 active
+  forward-tests, all 10 names uncovered (the researcher's priority targets). Graveyard =
+  s002–s013 (all gate-rejected — deployments are rare BY DESIGN; nothing has cleared the strict
+  OOS gate yet). Restore s001 as a 1-symbol canary only if the user asks.
+- ⏳ **NEXT: "Strategies / Research" dashboard tab (DESIGNED, NOT BUILT).** User wants the
+  dashboard to show strategies testing / accepted / rejected + reasoning + backtest. Plan in
+  `SESSION-HANDOFF.md` (add `strategies` table → extend publisher to push from registry +
+  graveyard + digest → new Streamlit tab → backfill s002–s013). All source data already exists
+  in the vault; no new data sources needed.
