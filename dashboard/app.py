@@ -142,6 +142,13 @@ def band_metrics(equity_rows: list[dict], daily_rows: list[dict]) -> dict:
             "status": status, "status_cls": cls}
 
 
+def group_strategies(strategies: list[dict]) -> dict:
+    """Split the roster into active forward-tests vs the rejected/retired graveyard."""
+    active = [s for s in strategies if s.get("status") == "forward-test"]
+    graveyard = [s for s in strategies if s.get("status") in ("rejected", "retired")]
+    return {"active": active, "graveyard": graveyard}
+
+
 def open_risk(trades: list[dict]) -> float:
     """Sum of qty×(entry−stop) across OPEN long trades — current capital at risk."""
     risk = 0.0
@@ -245,6 +252,41 @@ def render_band(st, m: dict, positions_count: int) -> None:
     """, unsafe_allow_html=True)
 
 
+def _status_badge(status: str) -> str:
+    cls = {"forward-test": "ok", "retired": "warn", "rejected": "stop"}.get(status, "warn")
+    label = {"forward-test": "Forward-test", "retired": "Retired",
+             "rejected": "Rejected"}.get(status, status or "—")
+    return f'<span class="badge {cls}"><span class="dot"></span>{label}</span>'
+
+
+def render_strategy(st, s: dict) -> None:
+    sd, stt = s.get("symbols_deployed"), s.get("symbols_tested")
+    symbols = f"{sd if sd is not None else '—'}/{stt if stt is not None else '—'}"
+    header = f"{s.get('id')} · {s.get('name')}  —  {s.get('status')}"
+    with st.expander(header):
+        st.markdown(_status_badge(s.get("status")), unsafe_allow_html=True)
+        cols = st.columns(4)
+        cols[0].metric("Symbols passed OOS", symbols,
+                       help="Symbols where it cleared the per-symbol OOS gate / total tested")
+        cols[1].metric("OOS trades", s.get("trades") if s.get("trades") is not None else "—")
+        cols[2].metric("Tuned knobs", s.get("n_params") if s.get("n_params") is not None else "—")
+        sh = s.get("oos_sharpe")
+        cols[3].metric("OOS Sharpe", f"{sh:.2f}" if sh is not None else "—")
+        if s.get("families"):
+            st.caption(f"Families: {s['families']}  ·  created {s.get('created') or '—'}")
+        if s.get("deployed_symbols"):
+            st.markdown(f"**Deployed on (live paper):** {s['deployed_symbols']}")
+        if s.get("thesis"):
+            st.markdown("**Thesis**")
+            st.markdown(s["thesis"])
+        if s.get("reasoning"):
+            st.markdown("**Verdict / reasoning**")
+            st.markdown(s["reasoning"])
+        if s.get("detail"):
+            st.markdown("**Backtest — by symbol**")
+            st.markdown(s["detail"])
+
+
 def main() -> None:
     import streamlit as st
     from dashboard.store import open_store
@@ -270,8 +312,8 @@ def main() -> None:
 
     render_band(st, m, len(positions))
 
-    tab_perf, tab_pos, tab_trades, tab_alerts = st.tabs(
-        ["Performance", "Positions", "Trades", "Alerts"])
+    tab_perf, tab_pos, tab_trades, tab_strat, tab_alerts = st.tabs(
+        ["Performance", "Positions", "Trades", "Strategies / Research", "Alerts"])
 
     with tab_perf:
         if not eq:
@@ -329,6 +371,49 @@ def main() -> None:
                 cols[3].metric("P&L", f"₹{pnl:,.0f}" if pnl is not None else "—")
                 st.markdown("**Why this trade**")
                 st.markdown(t.get("justification") or "_(no justification recorded)_")
+
+    with tab_strat:
+        strategies = store.strategies()
+        runs = store.research_runs(60)
+        groups = group_strategies(strategies)
+        active, graveyard = groups["active"], groups["graveyard"]
+
+        k1, k2, k3 = st.columns(3)
+        k1.metric("Forward-testing", len(active), help="Live on the paper book")
+        k2.metric("Rejected / retired", len(graveyard),
+                  help="Tested and sent to the graveyard")
+        k3.metric("Research runs", len(runs))
+
+        st.caption("The agent researches autonomously — most ideas are gate-rejected by "
+                   "design; a documented graveyard grows faster than the live roster.")
+
+        if not strategies and not runs:
+            st.markdown('<div class="empty">No strategies yet — the researcher publishes '
+                        'here once it has proposed and gated its first ideas.</div>',
+                        unsafe_allow_html=True)
+
+        if active:
+            st.markdown("##### Forward-testing (live paper)")
+            for s in active:
+                render_strategy(st, s)
+        elif strategies:
+            st.markdown("##### Forward-testing (live paper)")
+            st.markdown('<div class="empty">No strategy is forward-testing right now — '
+                        'nothing has cleared the strict OOS gate yet (rare by design).</div>',
+                        unsafe_allow_html=True)
+
+        if graveyard:
+            st.markdown("##### Graveyard — tested & rejected")
+            for s in graveyard:
+                render_strategy(st, s)
+
+        if runs:
+            st.markdown("##### Research runs")
+            rdf = pd.DataFrame(runs)[["date", "cadence", "proposed", "valid", "deployed_n",
+                                      "rejected", "coverage_before", "coverage_after"]]
+            rdf = rdf.rename(columns={"deployed_n": "deployed", "coverage_before": "cov_before",
+                                      "coverage_after": "cov_after"})
+            st.dataframe(rdf, use_container_width=True, hide_index=True)
 
     with tab_alerts:
         alerts = store.alerts(50)

@@ -26,3 +26,18 @@ CREATE TABLE IF NOT EXISTS daily(
 CREATE TABLE IF NOT EXISTS universe(
     symbol TEXT PRIMARY KEY, exchange TEXT, sector TEXT,
     avg_traded_value REAL, atr_pct REAL, as_of TEXT);
+
+-- Strategy roster: the research output (forward-test / rejected / retired) with the
+-- reasoning + per-symbol backtest, mirrored from the vault's strategy notes + graveyard.
+CREATE TABLE IF NOT EXISTS strategies(
+    id TEXT PRIMARY KEY, name TEXT, status TEXT, families TEXT,
+    deployed_symbols TEXT, created TEXT,
+    oos_return REAL, oos_sharpe REAL, win_rate REAL, trades INTEGER,
+    symbols_deployed INTEGER, symbols_tested INTEGER, n_params INTEGER,
+    thesis TEXT, reasoning TEXT, detail TEXT, in_graveyard INTEGER, updated_at TEXT);
+
+-- Researcher run log (the daily/weekly propose→gate→deploy/reject cadence).
+CREATE TABLE IF NOT EXISTS research_runs(
+    uid TEXT PRIMARY KEY, date TEXT, cadence TEXT, proposed INTEGER, valid INTEGER,
+    deployed_n INTEGER, rejected INTEGER, coverage_before INTEGER, coverage_after INTEGER,
+    summary TEXT, updated_at TEXT);

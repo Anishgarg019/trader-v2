@@ -31,6 +31,16 @@ DDL = [
     """CREATE TABLE IF NOT EXISTS universe(
         symbol TEXT PRIMARY KEY, exchange TEXT, sector TEXT,
         avg_traded_value REAL, atr_pct REAL, as_of TEXT)""",
+    """CREATE TABLE IF NOT EXISTS strategies(
+        id TEXT PRIMARY KEY, name TEXT, status TEXT, families TEXT,
+        deployed_symbols TEXT, created TEXT,
+        oos_return REAL, oos_sharpe REAL, win_rate REAL, trades INTEGER,
+        symbols_deployed INTEGER, symbols_tested INTEGER, n_params INTEGER,
+        thesis TEXT, reasoning TEXT, detail TEXT, in_graveyard INTEGER, updated_at TEXT)""",
+    """CREATE TABLE IF NOT EXISTS research_runs(
+        uid TEXT PRIMARY KEY, date TEXT, cadence TEXT, proposed INTEGER, valid INTEGER,
+        deployed_n INTEGER, rejected INTEGER, coverage_before INTEGER, coverage_after INTEGER,
+        summary TEXT, updated_at TEXT)""",
 ]
 
 
@@ -87,6 +97,20 @@ class Store:
         for n in names:
             self._upsert("universe", "symbol", n)
 
+    def replace_strategies(self, rows: list[dict[str, Any]]) -> None:
+        cur = self.conn.cursor()
+        cur.execute("DELETE FROM strategies")
+        self.conn.commit()
+        for r in rows:
+            self._upsert("strategies", "id", r)
+
+    def replace_research_runs(self, rows: list[dict[str, Any]]) -> None:
+        cur = self.conn.cursor()
+        cur.execute("DELETE FROM research_runs")
+        self.conn.commit()
+        for r in rows:
+            self._upsert("research_runs", "uid", r)
+
     # ---- reads (for the app) -------------------------------------------------
     def _rows(self, sql: str, params: tuple = ()) -> list[dict[str, Any]]:
         cur = self.conn.cursor()
@@ -111,6 +135,13 @@ class Store:
 
     def universe(self) -> list[dict]:
         return self._rows("SELECT * FROM universe ORDER BY avg_traded_value DESC")
+
+    def strategies(self) -> list[dict]:
+        return self._rows("SELECT * FROM strategies ORDER BY id")
+
+    def research_runs(self, limit: int = 60) -> list[dict]:
+        return self._rows(f"SELECT * FROM research_runs ORDER BY date DESC, uid DESC "
+                          f"LIMIT {int(limit)}")
 
     def strategy_winrates(self) -> list[dict]:
         rows = self._rows("SELECT strategy_id, outcome, pnl_rupees FROM trades "

@@ -11,12 +11,31 @@ from pathlib import Path
 from typing import Any, Callable
 
 from agent.trading_day import IST
+from agent.strategy_spec import count_params
 from vault.writer import VaultWriter
 from dashboard.store import Store
 
 
 def _now() -> str:
     return datetime.now(IST).isoformat(timespec="seconds")
+
+
+def _section(body: str, header: str) -> str:
+    """Return the text under a `## header` / `### header` line, up to the next header line."""
+    marker = next((f"{lvl}{header}" for lvl in ("## ", "### ") if f"{lvl}{header}" in body), None)
+    if marker is None:
+        return ""
+    after = body.split(marker, 1)[1]
+    out: list[str] = []
+    for i, line in enumerate(after.splitlines()):
+        if i > 0 and (line.startswith("## ") or line.startswith("### ")):
+            break
+        out.append(line)
+    return "\n".join(out).strip()
+
+
+def _first_line(text: str) -> str:
+    return next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
 
 
 def _split_symbol(sym: str) -> tuple[str, str]:
@@ -116,6 +135,68 @@ class Publisher:
                          "as_of": str(fm.get("date", ""))})
         self.store.replace_universe(rows)
 
+    def sync_strategies(self) -> int:
+        """Mirror the strategy roster (forward-test + graveyard) from the vault notes.
+
+        The strategy notes ARE the source of truth (the registry reads them); this is a
+        read-only projection of their reasoning + per-symbol backtest for the dashboard.
+        """
+        rows = []
+        for folder, grave in (("Strategies", False), ("Strategies/Graveyard", True)):
+            d = self.vault.root / Path(folder)
+            if not d.exists():
+                continue
+            for path in sorted(d.glob("*.md")):
+                fm, body = self.vault.read_note(f"{folder}/{path.name}")
+                if fm.get("type") != "strategy":
+                    continue
+                spec = fm.get("spec") or {}
+                bt = fm.get("backtest") or {}
+                fams = fm.get("families") or spec.get("families") or []
+                try:
+                    n_params = count_params(spec) if spec else None
+                except Exception:  # noqa: BLE001 — a malformed spec must not break publishing
+                    n_params = None
+                rows.append({
+                    "id": fm.get("id"), "name": fm.get("name"), "status": fm.get("status"),
+                    "families": ", ".join(fams),
+                    "deployed_symbols": ", ".join(fm.get("deployed_symbols") or []),
+                    "created": str(fm.get("created", "")),
+                    "oos_return": bt.get("return_pct"), "oos_sharpe": bt.get("sharpe_like"),
+                    "win_rate": bt.get("win_rate"), "trades": bt.get("trades"),
+                    "symbols_deployed": bt.get("symbols_deployed"),
+                    "symbols_tested": bt.get("symbols_tested"), "n_params": n_params,
+                    "thesis": (spec.get("thesis") or _section(body, "Thesis"))[:2000],
+                    "reasoning": _first_line(_section(body, "Backtest log"))[:1000],
+                    "detail": _section(body, "Win/loss by symbol")[:4000],
+                    "in_graveyard": 1 if grave else 0, "updated_at": _now(),
+                })
+        self.store.replace_strategies(rows)
+        return len(rows)
+
+    def sync_research_runs(self) -> int:
+        """Mirror the researcher run log (daily/weekly propose→gate→deploy/reject cadence)."""
+        folder = self.vault.root / "Research"
+        if not folder.exists():
+            return 0
+        rows = []
+        for path in sorted(folder.glob("*-researcher-*.md")):
+            fm, body = self.vault.read_note(f"Research/{path.name}")
+            if fm.get("type") != "research":
+                continue
+            summary = next((ln.strip() for ln in body.splitlines()
+                            if ln.strip() and not ln.startswith("#")), "")
+            rows.append({
+                "uid": path.stem, "date": str(fm.get("date", "")), "cadence": fm.get("cadence"),
+                "proposed": fm.get("proposed"), "valid": fm.get("valid"),
+                "deployed_n": len(fm.get("deployed") or []), "rejected": fm.get("rejected"),
+                "coverage_before": fm.get("coverage_before"),
+                "coverage_after": fm.get("coverage_after"),
+                "summary": summary[:1000], "updated_at": _now(),
+            })
+        self.store.replace_research_runs(rows)
+        return len(rows)
+
     # ---- one call from the loop ----------------------------------------------
     def publish(self, result, broker, price_fn: Callable[[str], float] | None = None) -> dict:
         """Publish everything for the current state. Returns a small summary."""
@@ -124,4 +205,7 @@ class Publisher:
         n_trades = self.sync_trades()
         n_alerts = self.sync_alerts()
         self.sync_universe()
-        return {"trades": n_trades, "alerts": n_alerts}
+        n_strategies = self.sync_strategies()
+        n_runs = self.sync_research_runs()
+        return {"trades": n_trades, "alerts": n_alerts,
+                "strategies": n_strategies, "research_runs": n_runs}

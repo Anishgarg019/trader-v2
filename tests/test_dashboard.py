@@ -3,7 +3,7 @@ import pandas as pd
 import pytest
 
 from dashboard.store import open_store
-from dashboard.publisher import Publisher, _justification
+from dashboard.publisher import Publisher, _justification, _section, _first_line
 from dashboard import app
 from agent.broker.paper_broker import PaperBroker, BUY, CNC, MARKET
 from agent.governor import evaluate_drawdown
@@ -62,7 +62,91 @@ def test_replace_positions_clears_old(store):
     assert syms == ["NSE:B"]
 
 
+def test_strategies_and_research_runs_round_trip(store):
+    store.replace_strategies([
+        {"id": "s001", "name": "RSI MR", "status": "retired", "families": "mean-reversion",
+         "deployed_symbols": "", "created": "2026-05-31", "oos_return": None,
+         "oos_sharpe": None, "win_rate": None, "trades": 1, "symbols_deployed": 0,
+         "symbols_tested": 10, "n_params": 2, "thesis": "buy dips", "reasoning": "0/10 OOS",
+         "detail": "| sym |", "in_graveyard": 0, "updated_at": "x"}])
+    store.replace_research_runs([
+        {"uid": "2026-06-02-researcher-daily", "date": "2026-06-02", "cadence": "daily",
+         "proposed": 2, "valid": 2, "deployed_n": 0, "rejected": 2, "coverage_before": 0,
+         "coverage_after": 0, "summary": "proposed=2 rejected=2", "updated_at": "x"}])
+    assert store.strategies()[0]["status"] == "retired"
+    assert store.strategies()[0]["symbols_tested"] == 10
+    assert store.research_runs()[0]["cadence"] == "daily"
+
+
+def test_replace_strategies_clears_old(store):
+    store.replace_strategies([{"id": "s001", "name": "a"}])
+    store.replace_strategies([{"id": "s002", "name": "b"}])
+    assert [s["id"] for s in store.strategies()] == ["s002"]
+
+
 # ---- publisher ----
+def test_section_and_first_line():
+    body = ("## Thesis\nbuy oversold\n\n## Backtest log\ndeployed 2/2 OOS\nmore\n\n"
+            "## Status history\n- created")
+    assert _section(body, "Thesis") == "buy oversold"
+    assert _first_line(_section(body, "Backtest log")) == "deployed 2/2 OOS"
+    assert _section(body, "Nonexistent") == ""
+
+
+_SPEC = {"id": "s900", "name": "Test MR", "families": ["mean-reversion"], "timeframe": "day",
+         "thesis": "buy oversold bounces",
+         "entry": {"all": [{"pred": "rsi_below", "length": 14, "threshold": 30}]},
+         "exit": {"any": [{"pred": "rsi_above", "length": 14, "threshold": 55}]},
+         "atr_k": 2.0, "atr_len": 14, "size_fraction": 1.0}
+
+
+def test_sync_strategies_and_research(tmp_path):
+    store = open_store(str(tmp_path / "d.sqlite"))
+    vault = VaultWriter(tmp_path / "vault"); vault.ensure_structure()
+    # an active forward-test
+    vault.write_strategy_note(
+        strategy_id="s900", name="Test MR", status="forward-test",
+        families=["mean-reversion"], created="2026-06-01",
+        backtest={"return_pct": 0.12, "sharpe_like": 0.8, "win_rate": 0.6, "trades": 14,
+                  "symbols_deployed": 2, "symbols_tested": 3},
+        thesis="buy oversold bounces", backtest_log="deployed on 2/3 symbols. Edge holds OOS.",
+        conditions="caveats\n\n### Win/loss by symbol\n| sym | x |\n| --- | --- |\n| INFY | ok |",
+        frontmatter_extra={"spec": _SPEC, "deployed_symbols": ["NSE:INFY", "NSE:TCS"],
+                           "tested_symbols": ["NSE:INFY", "NSE:TCS", "NSE:SBIN"]})
+    # a rejected graveyard strategy
+    vault.write_strategy_note(
+        strategy_id="s901", name="Dead Idea", status="rejected", families=["trend"],
+        created="2026-06-01", graveyard=True,
+        backtest={"return_pct": None, "trades": 0, "symbols_deployed": 0, "symbols_tested": 10},
+        thesis="golden cross", backtest_log="deployed on 0/10 symbols. No edge → graveyard.",
+        frontmatter_extra={"spec": {**_SPEC, "id": "s901", "families": ["trend"]},
+                           "deployed_symbols": [], "tested_symbols": ["NSE:INFY"]})
+    # a research run note
+    vault.write_note("Research/2026-06-02-researcher-daily.md",
+                     {"type": "research", "date": "2026-06-02", "cadence": "daily",
+                      "proposed": 2, "valid": 2, "deployed": [], "rejected": 2,
+                      "coverage_before": 0, "coverage_after": 0},
+                     "## Researcher run (daily)\nproposed=2 rejected=2\n")
+
+    pub = Publisher(store, vault)
+    assert pub.sync_strategies() == 2
+    assert pub.sync_research_runs() == 1
+
+    by_id = {s["id"]: s for s in store.strategies()}
+    ft = by_id["s900"]
+    assert ft["status"] == "forward-test" and ft["in_graveyard"] == 0
+    assert ft["n_params"] == 3                         # entry+exit rsi thresholds + atr_k
+    assert ft["symbols_deployed"] == 2 and ft["symbols_tested"] == 3
+    assert ft["deployed_symbols"] == "NSE:INFY, NSE:TCS"
+    assert "Edge holds OOS" in ft["reasoning"]
+    assert "INFY" in ft["detail"] and "| sym |" in ft["detail"]
+    grave = by_id["s901"]
+    assert grave["in_graveyard"] == 1 and grave["status"] == "rejected"
+
+    run = store.research_runs()[0]
+    assert run["cadence"] == "daily" and run["rejected"] == 2 and run["deployed_n"] == 0
+
+
 def test_justification_extraction():
     body = "## Justification (x)\n- Ensemble: RSI<30\n\n## Review (after close)\n- stuff"
     assert "RSI<30" in _justification(body)
@@ -160,6 +244,14 @@ def test_band_metrics_total_return_and_today_inr():
     assert m["today_inr"] == pytest.approx(10000.0)
 
 
+def test_group_strategies_splits_active_vs_graveyard():
+    strategies = [{"id": "s1", "status": "forward-test"}, {"id": "s2", "status": "rejected"},
+                  {"id": "s3", "status": "retired"}, {"id": "s4", "status": "researching"}]
+    g = app.group_strategies(strategies)
+    assert [s["id"] for s in g["active"]] == ["s1"]
+    assert [s["id"] for s in g["graveyard"]] == ["s2", "s3"]
+
+
 def test_open_risk_sums_open_long_trades():
     trades = [
         {"status": "open", "entry_price": 100.0, "stop_price": 96.0, "qty": 10},   # 40
@@ -192,6 +284,22 @@ def _seed(db):
     s.replace_universe([{"symbol": "NSE:INFY", "exchange": "NSE", "sector": "IT",
                          "avg_traded_value": 1e8, "atr_pct": 0.03, "as_of": "2026-05-29"}])
     s.record_alert({"uid": "a1", "date": "2026-05-29", "kind": "data", "detail": "d", "ts": "x"})
+    s.replace_strategies([
+        {"id": "s001", "name": "RSI MR", "status": "forward-test", "families": "mean-reversion",
+         "deployed_symbols": "NSE:INFY", "created": "2026-05-31", "oos_return": 0.12,
+         "oos_sharpe": 0.8, "win_rate": 0.6, "trades": 14, "symbols_deployed": 1,
+         "symbols_tested": 3, "n_params": 2, "thesis": "buy dips", "reasoning": "edge holds",
+         "detail": "| sym | x |\n| --- | --- |\n| INFY | ok |", "in_graveyard": 0,
+         "updated_at": "x"},
+        {"id": "s002", "name": "Dead", "status": "rejected", "families": "trend",
+         "deployed_symbols": "", "created": "2026-05-31", "oos_return": None, "oos_sharpe": None,
+         "win_rate": None, "trades": 0, "symbols_deployed": 0, "symbols_tested": 10,
+         "n_params": 2, "thesis": "golden cross", "reasoning": "0/10 OOS → graveyard",
+         "detail": "", "in_graveyard": 1, "updated_at": "x"}])
+    s.replace_research_runs([
+        {"uid": "2026-06-02-researcher-daily", "date": "2026-06-02", "cadence": "daily",
+         "proposed": 2, "valid": 2, "deployed_n": 0, "rejected": 2, "coverage_before": 0,
+         "coverage_after": 0, "summary": "proposed=2 rejected=2", "updated_at": "x"}])
 
 
 def test_app_renders_with_data(tmp_path, monkeypatch):
