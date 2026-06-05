@@ -309,8 +309,33 @@ late-phase deliverable (venv, deps, `.env`, `kite_login.py`, `VAULT_PATH`, Task 
   forward-tests, all 10 names uncovered (the researcher's priority targets). Graveyard =
   s002–s013 (all gate-rejected — deployments are rare BY DESIGN; nothing has cleared the strict
   OOS gate yet). Restore s001 as a 1-symbol canary only if the user asks.
-- ⏳ **NEXT: "Strategies / Research" dashboard tab (DESIGNED, NOT BUILT).** User wants the
-  dashboard to show strategies testing / accepted / rejected + reasoning + backtest. Plan in
-  `SESSION-HANDOFF.md` (add `strategies` table → extend publisher to push from registry +
-  graveyard + digest → new Streamlit tab → backfill s002–s013). All source data already exists
-  in the vault; no new data sources needed.
+- ✅ **"Strategies / Research" dashboard tab — BUILT, TESTED, LIVE (2026-06-04).** Added
+  `strategies` + `research_runs` tables (`dashboard/schema.sql` + `store.py`), publisher
+  `sync_strategies`/`sync_research_runs` (read-only projection of the vault strategy notes +
+  graveyard + Research/ run logs; notes stay source of truth), wired into `publish()`. New
+  Streamlit tab: forward-testing vs graveyard split + per-strategy thesis/verdict/OOS-symbol
+  counts/tuned-knobs + per-symbol backtest table + a research-run timeline. `scripts/
+  backfill_dashboard.py` one-shot vault→store backfill (loads `.env` first). Live Supabase
+  backfilled. **343 tests; /qa green; render verified.**
+- ✅ **Research gate RECALIBRATED for daily bars (2026-06-05, user "balanced" decision).**
+  Root cause that nothing ever passed: `min_trades_oos=30` against a ~180-bar OOS window
+  (900-day lookback) — a daily swing strategy fires 0–2× OOS, so EVERY proposal auto-failed
+  on `too_few_trades_oos` before its edge was judged; the whole graveyard is that artifact,
+  not lack of edge. Fix: `LOOKBACK_DAYS` 900→1950 (~5.3yr/~1300 bars, just under Kite's
+  ~2000-day single-request day-candle cap; `build_history_fn` does NOT chunk), and
+  `evaluate_spec` `min_trades_oos` default 30→12 (`DEFAULT_MIN_TRADES_OOS`; per-symbol gate +
+  paper forward-test + decay monitor remain the false-positive backstops). Researcher caps
+  raised: daily 2→4, weekly 5→10, active ceiling 8→12. **Empirically verified on live Kite
+  data:** OOS trades/symbol jumped 0–2 → 15–22; s004 (MACD momentum, prev. 0/10) now passes
+  on TATASTEEL (+33.7% OOS) + HINDALCO (+7.3%), rejected on the 8 losers.
+  ⚠️ **Graveyard caveat:** s002–s015 were rejected by the BROKEN gate, and novelty-key dedup
+  blocks the researcher from re-proposing those families — so some now-viable ideas (e.g.
+  s004) sit unreachable. Either let fresh proposals pass organically, or build a one-off
+  "re-gate the graveyard" resurrector (NOT built; user deferred — let the next run go first).
+- ✅ **Dashboard connection-leak FIXED (2026-06-05).** Streamlit Cloud crashed with
+  `EMAXCONNSESSION (max clients 15, session mode)`: `app.py` opened a NEW psycopg connection
+  on every 30s auto-refresh and never closed it, exhausting Supabase's session-mode pool.
+  Fix: cache one connection via `@st.cache_resource` + liveness-probe-and-reconnect-once +
+  a friendly error instead of a raw traceback. **Durable infra rec (user TODO):** switch
+  `DASHBOARD_DB_URL` to the Supabase **transaction-mode** pooler (port **6543**) — built for
+  short-lived serverless connections; the current DSN uses session mode (port 5432, cap 15).
