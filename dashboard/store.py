@@ -167,7 +167,12 @@ def open_store(dsn: str | None = None):
     if dsn and dsn.startswith(("postgres://", "postgresql://")):
         import psycopg
         from psycopg.rows import tuple_row
-        conn = psycopg.connect(dsn, row_factory=tuple_row, autocommit=False)
+        # prepare_threshold=None disables psycopg3 server-side prepared statements, which is
+        # REQUIRED for the Supabase transaction-mode pooler (port 6543) — it rotates the
+        # backend per transaction, so a prepared statement from one txn is gone in the next.
+        # Harmless on the session pooler (5432) / direct connections too.
+        conn = psycopg.connect(dsn, row_factory=tuple_row, autocommit=False,
+                               prepare_threshold=None)
         return Store(conn, placeholder="%s")
     import sqlite3
     path = dsn or "dashboard_data.sqlite"
