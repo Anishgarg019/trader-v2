@@ -27,6 +27,14 @@ from backtest.costs import CostModel
 from backtest.engine import run_backtest
 from backtest.validation import train_test_split, overfit_report, OverfitReport
 
+# OOS trade-count floor for the research gate. Calibrated for DAILY bars over a multi-year
+# window (~1950d lookback → ~400-bar OOS): a daily swing strategy fires every few weeks, so
+# the old intraday-style floor of 30 was mathematically unreachable and auto-rejected every
+# proposal before its edge was evaluated. 12 keeps statistical weight while letting genuine
+# daily edges clear; the per-symbol gate + paper forward-test + decay monitor remain the
+# false-positive backstops (user decision 2026-06-05).
+DEFAULT_MIN_TRADES_OOS = 12
+
 
 @dataclass
 class SymbolVerdict:
@@ -79,7 +87,7 @@ def evaluate_spec(spec: dict,
                   split: float = 0.7,
                   cost_model: CostModel | None = None,
                   slippage_bps: float = 5.0,
-                  min_trades_oos: int = 30,
+                  min_trades_oos: int = DEFAULT_MIN_TRADES_OOS,
                   min_symbols: int = 1) -> ResearchVerdict:
     """Compile → per-symbol IS/OOS backtest → overfit gate → ResearchVerdict.
 

@@ -43,10 +43,11 @@ def test_all_losers_rejected_to_graveyard():
 
 
 def test_known_overfit_spec_fails():
-    # too_few_trades_oos with default min_trades_oos=30: a rarely-trading spec on a short
-    # OOS window can't clear the trade-count flag → rejected even if it happens to be green.
+    # too_few_trades_oos: a rarely-trading spec on a short OOS window can't clear the
+    # trade-count flag → rejected even if it happens to be green. Pin the floor explicitly
+    # (decoupled from the gate's default, which is calibrated for multi-year daily windows).
     frames = {"UP": _trend(drift=0.6, seed=6)}
-    v = evaluate_spec(LONGBIAS, frames)  # default min_trades_oos=30
+    v = evaluate_spec(LONGBIAS, frames, min_trades_oos=30)
     assert v.per_symbol["UP"].overfit is not None
     assert "too_few_trades_oos" in v.per_symbol["UP"].overfit.flags
     assert v.per_symbol["UP"].passed is False

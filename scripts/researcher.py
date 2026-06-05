@@ -48,11 +48,14 @@ from vault.digest import ResearchDigest, digest_diff
 log = get_logger()
 
 # ---- caps (enforced in Python, RESEARCHER-SPEC §8) --------------------------
-MAX_ACTIVE_FORWARD_TESTS = 8
-MAX_PROPOSALS_PER_RUN = 5
-DAILY_LIGHT_PROPOSALS = 2          # daily-light: at most a small top-up
+MAX_ACTIVE_FORWARD_TESTS = 12
+MAX_PROPOSALS_PER_RUN = 10          # weekly-deep
+DAILY_LIGHT_PROPOSALS = 4          # daily-light: a small top-up
 PROMPT_PATH = REPO_ROOT / "prompts" / "research_desk_system.md"
-LOOKBACK_DAYS = 900                # ~600 trading bars → room for 200-len indicators + OOS
+LOOKBACK_DAYS = 1950               # ~5.3yr / ~1300 trading bars (just under Kite's ~2000-day
+                                   # single-request day-candle cap; build_history_fn doesn't
+                                   # chunk). OOS ≈ 400 bars → room for a daily edge to clear
+                                   # the (now 12) OOS trade floor. Widened 2026-06-05.
 
 
 @dataclass
