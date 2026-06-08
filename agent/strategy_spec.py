@@ -241,6 +241,20 @@ def novelty_key(spec: dict, symbols: Any = None) -> str:
     return f"{fam}|{structure}|{syms}"
 
 
+def predicate_structure(spec: dict) -> str:
+    """The family-INDEPENDENT identity of a spec: its sorted set of entry+exit predicate
+    names (combinators/params ignored), e.g. `higher_highs+lower_lows+volume_confirms`.
+
+    `novelty_key` prefixes this with the spec's `families`, which are an LLM-chosen label —
+    so two structurally-identical strategies can get different novelty keys just by being
+    tagged `momentum` vs `trend`. The active-duplicate guard keys on THIS instead, so a family
+    relabel can't disguise a structural twin of a live strategy (researcher dedup, §6.3)."""
+    preds: list[str] = []
+    for key in ("entry", "exit"):
+        _collect_preds(spec.get(key, {}), preds)
+    return "+".join(sorted(set(preds))) or "empty"
+
+
 def validate_spec(spec: dict) -> dict:
     """Validate a strategy spec against the DSL whitelist + structural caps.
 

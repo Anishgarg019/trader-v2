@@ -122,6 +122,49 @@ def test_active_cap_blocks_new_proposals(setup, monkeypatch):
     assert len(reg.load_active_specs()) == 1
 
 
+def test_active_duplicate_guard_blocks_relabeled_twin(setup):
+    """A structural twin of a live strategy on the SAME symbol must NOT deploy — even when the
+    LLM relabels its `families` (the exact s025/s027 gap)."""
+    vault, reg, universe, frames = setup
+    researcher.run_researcher(registry=reg, universe=universe, frames=frames,
+                              proposer=lambda c, n: [dict(LONGBIAS)], cadence="daily",
+                              eval_kwargs={"min_trades_oos": 1})
+    assert reg.load_active_specs()[0].deployed_symbols == ["NSE:UP"]
+
+    twin = dict(LONGBIAS)                  # identical entry/exit predicates...
+    twin["families"] = ["momentum"]        # ...only the family label differs (was ["trend"])
+    twin["name"] = "Relabeled Twin"
+    s = researcher.run_researcher(registry=reg, universe=universe, frames=frames,
+                                  proposer=lambda c, n: [dict(twin)], cadence="daily",
+                                  eval_kwargs={"min_trades_oos": 1})
+    assert s.deployed == [] and s.rejected == 1
+    assert s.near_dup_active == 1                       # flagged family-INDEPENDENTLY now
+    assert len(reg.load_active_specs()) == 1            # still just the original
+    assert any("structural duplicate" in m for m in s.messages)
+
+
+def test_active_duplicate_guard_trims_to_new_symbols(setup):
+    """A twin that also wins on a symbol the incumbent does NOT cover deploys on the NEW
+    symbol only (already-covered ones trimmed)."""
+    vault, reg, _u, _f = setup
+    # incumbent deployed on UP only
+    researcher.run_researcher(registry=reg, universe=["NSE:UP"],
+                              frames={"NSE:UP": _trend(drift=0.6, seed=2)},
+                              proposer=lambda c, n: [dict(LONGBIAS)], cadence="daily",
+                              eval_kwargs={"min_trades_oos": 1})
+    # twin wins on UP (covered) AND UP2 (new) → should deploy on UP2 only
+    twin = dict(LONGBIAS); twin["families"] = ["momentum"]; twin["name"] = "Twin"
+    s = researcher.run_researcher(
+        registry=reg, universe=["NSE:UP", "NSE:UP2"],
+        frames={"NSE:UP": _trend(drift=0.6, seed=2), "NSE:UP2": _trend(drift=0.6, seed=7)},
+        proposer=lambda c, n: [dict(twin)], cadence="daily",
+        eval_kwargs={"min_trades_oos": 1})
+    assert len(s.deployed) == 1
+    new = next(a for a in reg.load_active_specs() if a.spec.get("name") == "Twin")
+    assert new.deployed_symbols == ["NSE:UP2"]          # UP trimmed (already covered)
+    assert any("trimmed already-covered" in m for m in s.messages)
+
+
 def test_daily_skips_improvement(setup):
     vault, reg, universe, frames = setup
     # deploy a mediocre incumbent first

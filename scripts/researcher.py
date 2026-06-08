@@ -37,7 +37,7 @@ from agent.config import load_settings, REPO_ROOT
 from agent.logging_setup import get_logger
 from agent.notify import send_ntfy, notify_failure
 from agent.registry import StrategyRegistry
-from agent.strategy_spec import validate_spec, SpecError, novelty_key
+from agent.strategy_spec import validate_spec, SpecError, novelty_key, predicate_structure
 from backtest.research import evaluate_spec
 from backtest.optimize import (
     optimize_strategy, is_mediocre, MAX_VARIANTS_PER_STRATEGY,
@@ -230,6 +230,15 @@ def run_researcher(*, registry: StrategyRegistry, universe: list[str],
 
     # 2) propose — cap is LOAD-BEARING (real active count) --------------------------------
     active = registry.load_active_specs()
+    # predicate-structure -> {bare symbols already traded live by a strategy of that structure}.
+    # A new spec is only allowed to deploy on symbols NOT already covered by a structural twin
+    # (family-independent), so a relabel can't spawn a redundant duplicate (gap found 2026-06-08).
+    def _bare(sym: str) -> str:
+        return sym.split(":", 1)[1] if ":" in sym else sym
+    active_struct_syms: dict[str, set[str]] = {}
+    for a in active:
+        active_struct_syms.setdefault(predicate_structure(a.spec), set()).update(
+            _bare(x) for x in a.deployed_symbols)
     if len(active) >= MAX_ACTIVE_FORWARD_TESTS:
         s.messages.append(f"at active cap ({MAX_ACTIVE_FORWARD_TESTS}) — no new proposals this run")
         s.coverage_after = len(digest.load()["coverage"]["covered"])
@@ -274,26 +283,52 @@ def run_researcher(*, registry: StrategyRegistry, universe: list[str],
             continue
         s.valid += 1
 
-        # telemetry: is the digest under-informing? (re-proposed dead / near-dup of active)
+        # telemetry: is the digest under-informing? (re-proposed dead / near-dup of active).
+        # near-dup is keyed on predicate STRUCTURE (family-independent) so a relabel can't hide it.
         nk = novelty_key(spec, None)
+        struct = predicate_structure(spec)
         if any(k and k.startswith(nk.rsplit("|", 1)[0]) for k in rejected_keys):
             s.re_proposed_rejected += 1
             s.messages.append(f"telemetry: {sid} re-proposes a graveyard family ({nk}) "
                               "— rejected: under-informing")
-        if any(k and k.rsplit("|", 1)[0] == nk.rsplit("|", 1)[0] for k in active_keys):
+        if struct in active_struct_syms:
             s.near_dup_active += 1
-            s.messages.append(f"telemetry: {sid} near-duplicates an active family ({nk}) "
-                              "— active: under-informing")
+            s.messages.append(f"telemetry: {sid} shares structure '{struct}' with an active "
+                              "strategy — digest under-informing")
 
         # per-symbol gate (deterministic, the ONLY path to deployment — real frames/notes)
         verdict = evaluate_spec(spec, frames, **eval_kwargs)
+
+        # ACTIVE-DUPLICATE GUARD: never deploy on a symbol already traded live by a
+        # structurally-identical strategy (redundant + inflates multiple-comparisons). Trim to
+        # the genuinely-new symbols; if none remain, graveyard the whole thing.
+        if verdict.passed:
+            already = active_struct_syms.get(struct, set())
+            fresh = [sym for sym in verdict.deployed_symbols if _bare(sym) not in already]
+            if not fresh:
+                verdict.passed = False
+                verdict.notes += (f" REJECTED as structural duplicate of an active strategy on "
+                                  f"{sorted(already & {_bare(x) for x in verdict.deployed_symbols})} "
+                                  f"(structure '{struct}'; family relabel is not novelty).")
+            elif len(fresh) < len(verdict.deployed_symbols):
+                dropped = [s_ for s_ in verdict.deployed_symbols if s_ not in fresh]
+                verdict.deployed_symbols = fresh
+                s.messages.append(f"{sid}: trimmed already-covered {dropped} (active "
+                                  f"structural twin on '{struct}')")
+
         if verdict.passed and len(active) + len(s.deployed) < MAX_ACTIVE_FORWARD_TESTS:
             registry.write_spec_note(verdict, spec, status="forward-test",
                                      created=str(date.today()), thesis=spec.get("thesis", ""))
             s.deployed.append(sid)
+            # later proposals in THIS run must dedup against what we just deployed too
+            active_struct_syms.setdefault(struct, set()).update(
+                _bare(x) for x in verdict.deployed_symbols)
             s.messages.append(f"deployed {sid} on {verdict.deployed_symbols}")
         else:
-            reason = "no profitable symbol OOS" if not verdict.passed else "active cap reached"
+            reason = ("structural duplicate of an active strategy" if not verdict.passed
+                      and "structural duplicate" in verdict.notes
+                      else "no profitable symbol OOS" if not verdict.passed
+                      else "active cap reached")
             registry.write_spec_note(verdict, spec, status="rejected",
                                      created=str(date.today()), graveyard=True,
                                      thesis=spec.get("thesis", ""))
