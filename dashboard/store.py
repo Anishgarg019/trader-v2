@@ -171,8 +171,12 @@ def open_store(dsn: str | None = None):
         # REQUIRED for the Supabase transaction-mode pooler (port 6543) — it rotates the
         # backend per transaction, so a prepared statement from one txn is gone in the next.
         # Harmless on the session pooler (5432) / direct connections too.
+        # connect_timeout + statement_timeout are LOAD-BEARING: without them a slow/dropped
+        # pooler backend makes connect (or a query on a dead socket) block forever, hanging
+        # the dashboard with no error. Bounding both turns a hang into a catchable exception.
         conn = psycopg.connect(dsn, row_factory=tuple_row, autocommit=False,
-                               prepare_threshold=None)
+                               prepare_threshold=None, connect_timeout=10,
+                               options="-c statement_timeout=15000")  # ms
         return Store(conn, placeholder="%s")
     import sqlite3
     path = dsn or "dashboard_data.sqlite"

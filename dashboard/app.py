@@ -304,33 +304,24 @@ def main() -> None:
                 '<div class="app-sub">Read-only · paper money · NSE/BSE · '
                 f'auto-refresh {REFRESH_SECONDS}s</div>', unsafe_allow_html=True)
 
-    # Cache ONE connection across reruns. Streamlit re-runs this script on every 30s
-    # auto-refresh; opening a fresh connection each time leaks them until Supabase's
-    # session-mode pool (max 15 clients) is exhausted and every connect fails with
-    # EMAXCONNSESSION. cache_resource gives all reruns the same connection; we probe it
-    # for liveness and reconnect once if it went stale.
-    @st.cache_resource(show_spinner=False)
-    def _connect(dsn):
-        return open_store(dsn)
-
+    # Open a FRESH connection per rerun. We deliberately DON'T cache it: the transaction-mode
+    # pooler (6543) drops idle backends between the 30s refreshes, so a cached connection goes
+    # dead and the next query HANGS the whole page with no error (it just blocks). The pooler
+    # is built for short-lived connections, so a fresh open per run is the correct, cheap
+    # pattern. open_store sets connect_timeout + statement_timeout, so a slow/dead pooler
+    # surfaces as the friendly error below instead of a stuck page.
     dsn = get_secret("DASHBOARD_DB_URL")
     try:
-        store = _connect(dsn)
-        store.equity_series()                 # liveness probe
-    except Exception:                         # noqa: BLE001 — stale/failed cached conn
-        _connect.clear()
-        try:
-            store = _connect(dsn)
-            store.equity_series()
-        except Exception as e:                # noqa: BLE001
-            st.error(
-                "⚠️ Can't reach the dashboard database right now.\n\n"
-                "If this keeps happening, the Supabase **session-mode** pool (max 15 "
-                "clients) is likely exhausted — point `DASHBOARD_DB_URL` at the "
-                "**transaction-mode** pooler (host `…pooler.supabase.com`, port **6543**), "
-                "which is built for short-lived serverless connections.\n\n"
-                f"Detail: `{type(e).__name__}: {str(e)[:200]}`")
-            st.stop()
+        store = open_store(dsn)
+        store.equity_series()                 # confirm it's actually usable, not just opened
+    except Exception as e:                     # noqa: BLE001
+        st.error(
+            "⚠️ Can't reach the dashboard database right now.\n\n"
+            "If this keeps happening, point `DASHBOARD_DB_URL` at the Supabase "
+            "**transaction-mode** pooler (host `…pooler.supabase.com`, port **6543**), "
+            "which is built for short-lived serverless connections.\n\n"
+            f"Detail: `{type(e).__name__}: {str(e)[:200]}`")
+        st.stop()
 
     eq = store.equity_series()
     positions = store.open_positions()
