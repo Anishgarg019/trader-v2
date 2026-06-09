@@ -174,7 +174,13 @@ def open_store(dsn: str | None = None):
         # connect_timeout + statement_timeout are LOAD-BEARING: without them a slow/dropped
         # pooler backend makes connect (or a query on a dead socket) block forever, hanging
         # the dashboard with no error. Bounding both turns a hang into a catchable exception.
-        conn = psycopg.connect(dsn, row_factory=tuple_row, autocommit=False,
+        # autocommit=True is ESSENTIAL on the transaction-mode pooler: with it OFF, every
+        # SELECT opens a transaction the read-only dashboard never commits, so the connection
+        # sits idle-in-transaction holding a pooler backend — backends pile up across the 30s
+        # refreshes until the pool saturates (ECHECKOUTTIMEOUT) and nothing can connect. With
+        # it ON each statement returns its backend immediately (what transaction mode is for).
+        # The Store's explicit commit()s after writes become harmless no-ops under autocommit.
+        conn = psycopg.connect(dsn, row_factory=tuple_row, autocommit=True,
                                prepare_threshold=None, connect_timeout=10,
                                options="-c statement_timeout=15000")  # ms
         return Store(conn, placeholder="%s")
